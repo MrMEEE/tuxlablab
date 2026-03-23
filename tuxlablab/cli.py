@@ -65,8 +65,12 @@ def _normalize_unit_name(name: str) -> str:
     return unit
 
 
-def _build_user_service_text(db_path: str | None = None) -> str:
-    exec_cmd = f"{shlex.quote(sys.executable)} -m tuxlablab.api"
+def _build_user_service_text(
+    db_path: str | None = None,
+    python_exec: str | None = None,
+) -> str:
+    python_path = python_exec or os.environ.get("TUXLABLAB_PYTHON") or sys.executable
+    exec_cmd = f"{shlex.quote(python_path)} -m tuxlablab.api"
     lines = [
         "[Unit]",
         "Description=tuxlablab user service",
@@ -473,12 +477,23 @@ def cmd_settings(key: str | None, value: str | None) -> None:
     help="SQLite DB path to inject via TUXLABLAB_DB (default: current env value if set)",
 )
 @click.option(
+    "--python",
+    "python_exec",
+    default=None,
+    help="Python interpreter path used in ExecStart (defaults to current interpreter)",
+)
+@click.option(
     "--enable-linger/--no-enable-linger",
     default=True,
     show_default=True,
     help="Run 'loginctl enable-linger' for the current user",
 )
-def cmd_service_install(name: str, db_path: str | None, enable_linger: bool) -> None:
+def cmd_service_install(
+    name: str,
+    db_path: str | None,
+    python_exec: str | None,
+    enable_linger: bool,
+) -> None:
     """Install and start a user-level systemd service for tuxlablab."""
     unit = _normalize_unit_name(name)
     service_dir = Path.home() / ".config" / "systemd" / "user"
@@ -487,7 +502,12 @@ def cmd_service_install(name: str, db_path: str | None, enable_linger: bool) -> 
     resolved_db_path = db_path or os.environ.get("TUXLABLAB_DB")
 
     service_dir.mkdir(parents=True, exist_ok=True)
-    service_file.write_text(_build_user_service_text(resolved_db_path))
+    service_file.write_text(
+        _build_user_service_text(
+            db_path=resolved_db_path,
+            python_exec=python_exec,
+        )
+    )
 
     _run_cmd(["systemctl", "--user", "daemon-reload"])
     _run_cmd(["systemctl", "--user", "enable", "--now", unit])

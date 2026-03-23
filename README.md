@@ -11,7 +11,7 @@ Python-based VM administration – a full-featured port of [laptop-lab](https://
 * **Distribution system** – define reusable VM templates with `.dist` files
 * **REST API** – full JSON API served by FastAPI (with auto-generated Swagger docs at `/docs`)
 * **Web interface** – dashboard, VM detail pages, and creation form
-* **CLI** – `vm` command mirroring the original laptop-lab bash script
+* **CLI** – `tuxlablab` command for VM and service management
 
 ## Requirements
 
@@ -27,6 +27,17 @@ pip install -e .
 # or
 pip install -r requirements.txt
 ```
+
+Or use the bootstrap installer:
+
+```bash
+export TUXLABLAB_DB=/absolute/path/to/tuxlablab.db
+./install.sh
+```
+
+`install.sh` creates a virtual environment next to the SQLite database,
+installs tuxlablab into it, and can optionally install/start the user systemd
+service using that venv Python.
 
 ## Configuration
 
@@ -58,37 +69,37 @@ tuxlablab settings labdomain mylab.lan
 
 ```bash
 # Create a VM (2 vCPUs, 2048 MB RAM, default distribution)
-vm create test123 --cpus 2 --memory 2048
+tuxlablab create test123 --cpus 2 --memory 2048
 
 # Create a VM with a specific distribution
-vm create apache --cpus 2 --memory 2048 --dist apache
+tuxlablab create apache --cpus 2 --memory 2048 --dist apache
 
 # List all VMs
-vm list
+tuxlablab list
 
 # Start / stop a VM
-vm start test123
-vm stop test123
+tuxlablab start test123
+tuxlablab stop test123
 
 # Run an Ansible playbook on a VM
-vm playbook test123 apache.yml
+tuxlablab playbook test123 apache.yml
 
 # Remove a VM (including its disk)
-vm remove test123
+tuxlablab remove test123
 
 # List available distributions
-vm distributions
+tuxlablab distributions
 
 # Start the web/API server
-vm server
+tuxlablab server
 # or
 tuxlablab-server
 
 # Install/start a user systemd service (with linger)
-vm service-install
+tuxlablab service-install
 
 # Remove the user systemd service
-vm service-uninstall
+tuxlablab service-uninstall
 ```
 
 ### User systemd service
@@ -117,7 +128,7 @@ The unit file is created under `~/.config/systemd/user/` and runs
 Start the server and open `http://localhost:8080` in your browser:
 
 ```bash
-vm server
+tuxlablab server
 ```
 
 The interactive Swagger API documentation is available at `http://localhost:8080/docs`.
