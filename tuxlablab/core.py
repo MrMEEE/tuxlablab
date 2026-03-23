@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover
     libvirt = None  # type: ignore – allow import without libvirt for testing
 
 from tuxlablab.config import Config, config as _global_config
+import tuxlablab.db as _db
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -43,6 +45,17 @@ class Distribution:
     display_name: str   # human-readable label
     image_file: str     # qcow2 filename inside images/
     playbooks: list[str] = field(default_factory=list)
+
+
+def _dist_from_row(row: dict) -> Distribution:
+    """Convert a DB row dict to a :class:`Distribution`."""
+    playbooks_raw = row.get("playbooks", "") or ""
+    return Distribution(
+        name=row["name"],
+        display_name=row["display_name"],
+        image_file=row["image_file"],
+        playbooks=[p for p in playbooks_raw.split() if p],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +137,10 @@ def _vm_xml(
 
 
 def _parse_dist_file(path: Path) -> Distribution | None:
-    """Parse a bash-style ``.dist`` file into a :class:`Distribution`."""
+    """Parse a bash-style ``.dist`` file into a :class:`Distribution`.
+
+    Kept for the migration / import-dist-files helper.
+    """
     data: dict[str, str] = {}
     try:
         for line in path.read_text().splitlines():
@@ -142,7 +158,7 @@ def _parse_dist_file(path: Path) -> Distribution | None:
     playbooks_raw = data.get("DISTPLAYBOOKS", "")
     playbooks = [p for p in playbooks_raw.split() if p]
     return Distribution(
-        name=path.stem,       # e.g. "centos9" from "centos9.dist"
+        name=path.stem,
         display_name=data.get("DISTNAME", path.stem),
         image_file=image_file,
         playbooks=playbooks,
@@ -294,11 +310,8 @@ class VMManager:
         # Persist definition so it survives reboots
         conn.defineXML(xml)
 
-        # Write inventory
-        inv_path = cfg.inventories_dir / f"inventory-{fqdn}"
-        inv_path.write_text(
-            f"{fqdn} ansible_user=root\n"
-        )
+        # Store inventory in the DB (replaces per-file inventory)
+        _db.upsert_vm_inventory(fqdn, ansible_user="root")
 
         # Wait for SSH
         emit(f"Waiting for {fqdn} to come up ...")
@@ -342,9 +355,8 @@ class VMManager:
             except OSError:
                 pass
 
-        # Remove inventory
-        inv = self._cfg.inventories_dir / f"inventory-{fqdn}"
-        inv.unlink(missing_ok=True)
+        # Remove inventory from the DB
+        _db.delete_vm_inventory(fqdn)
 
     # ------------------------------------------------------------------
     # Start / Stop
@@ -405,14 +417,9 @@ class VMManager:
                 f"Available playbooks are in {cfg.playbooks_dir}"
             )
 
-        # Ensure inventory
-        inv_path = cfg.inventories_dir / f"inventory-{fqdn}"
-        if not inv_path.exists():
-            cfg.inventories_dir.mkdir(parents=True, exist_ok=True)
-            inv_path.write_text(
-                f"{fqdn} ansible_user=root "
-                f'ansible_ssh_common_args="-o StrictHostKeyChecking=no"\n'
-            )
+        # Ensure inventory exists in the DB
+        if _db.get_vm_inventory(fqdn) is None:
+            _db.upsert_vm_inventory(fqdn, ansible_user="root")
 
         # Ensure VM is running
         conn = self._connect()
@@ -427,28 +434,18 @@ class VMManager:
         self._run_ansible(fqdn, pb_path, emit)
 
     # ------------------------------------------------------------------
-    # Distribution helpers
+    # Distribution helpers (backed by SQLite)
     # ------------------------------------------------------------------
 
     def list_distributions(self) -> list[Distribution]:
-        dist_dir = self._cfg.distributions_dir
-        if not dist_dir.exists():
-            return []
-        dists: list[Distribution] = []
-        for p in sorted(dist_dir.glob("*.dist")):
-            d = _parse_dist_file(p)
-            if d is not None:
-                dists.append(d)
-        return dists
+        """Return all distributions from the SQLite database."""
+        return [_dist_from_row(r) for r in _db.list_distributions()]
 
     def get_distribution(self, name: str) -> Distribution | None:
-        for d in self.list_distributions():
-            if d.name == name:
-                return d
-        return None
+        row = _db.get_distribution(name)
+        return _dist_from_row(row) if row else None
 
     def _resolve_distribution(self, name: str | None) -> Distribution:
-        cfg = self._cfg
         if name:
             dist = self.get_distribution(name)
             if dist is None:
@@ -459,18 +456,19 @@ class VMManager:
                 )
             return dist
 
-        # Fall back to "default" symlink
-        default_link = cfg.distributions_dir / "default"
-        if default_link.exists():
-            d = _parse_dist_file(default_link)
-            if d is not None:
-                d.name = "default"
-                return d
+        # Fall back to a distribution named "default" in the DB
+        dist = self.get_distribution("default")
+        if dist is not None:
+            return dist
+
+        # Last resort: use the first defined distribution
+        all_dists = self.list_distributions()
+        if all_dists:
+            return all_dists[0]
 
         raise VMManagerError(
-            "No distribution specified and no default distribution is set. "
-            f"Please create a symlink: {cfg.distributions_dir}/default "
-            "pointing to the desired .dist file, or pass a distribution name."
+            "No distribution specified and no distributions are defined. "
+            "Add one via: tuxlablab dist-add"
         )
 
     # ------------------------------------------------------------------
@@ -513,34 +511,51 @@ class VMManager:
         playbook: str,
         emit: Callable[[str], None],
     ) -> None:
-        cfg = self._cfg
-        inv_path = cfg.inventories_dir / f"inventory-{hostname}"
-        cmd = [
-            "ansible-playbook",
-            "-e", f"vm_name={hostname}",
-            "-i", str(inv_path),
-            playbook,
-        ]
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            if proc.stdout is None:
-                raise VMManagerError("Failed to open stdout pipe for ansible-playbook.")
-            for line in proc.stdout:
-                emit(line.rstrip())
-            proc.wait()
-            if proc.returncode != 0:
-                raise VMManagerError(
-                    f"ansible-playbook exited with code {proc.returncode}"
+        # Build inventory content from the DB record (or sensible default)
+        inv_row = _db.get_vm_inventory(hostname)
+        if inv_row:
+            ansible_user = inv_row["ansible_user"]
+            ssh_args = inv_row["ssh_args"]
+        else:
+            ansible_user = "root"
+            ssh_args = "-o StrictHostKeyChecking=no"
+        inv_content = (
+            f"{hostname} ansible_user={ansible_user} "
+            f'ansible_ssh_common_args="{ssh_args}"\n'
+        )
+
+        # Write a temporary inventory file using a temp directory so cleanup
+        # is handled safely by the context manager, even if an exception occurs.
+        with tempfile.TemporaryDirectory(prefix="tuxlablab-") as tmpdir:
+            tmp_inv = str(Path(tmpdir) / "inventory.ini")
+            Path(tmp_inv).write_text(inv_content)
+
+            cmd = [
+                "ansible-playbook",
+                "-e", f"vm_name={hostname}",
+                "-i", tmp_inv,
+                playbook,
+            ]
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
                 )
-        except FileNotFoundError:
-            raise VMManagerError(
-                "ansible-playbook not found. Please install Ansible."
-            )
+                if proc.stdout is None:
+                    raise VMManagerError("Failed to open stdout pipe for ansible-playbook.")
+                for line in proc.stdout:
+                    emit(line.rstrip())
+                proc.wait()
+                if proc.returncode != 0:
+                    raise VMManagerError(
+                        f"ansible-playbook exited with code {proc.returncode}"
+                    )
+            except FileNotFoundError:
+                raise VMManagerError(
+                    "ansible-playbook not found. Please install Ansible."
+                )
 
     def _wait_for_ssh(
         self,

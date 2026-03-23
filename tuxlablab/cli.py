@@ -1,4 +1,4 @@
-"""Click-based CLI for tuxlablab – mirrors the laptop-lab ``vm`` bash script."""
+"""Click-based CLI for tuxlablab."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import sys
 
 import click
 
+import tuxlablab.db as _db
 from tuxlablab.config import config
 from tuxlablab.core import VMManager, VMManagerError
 
@@ -52,17 +53,17 @@ def _warn(msg: str) -> None:
 def main(ctx: click.Context) -> None:
     """tuxlablab – Python-based VM administration.
 
-    Equivalent to the laptop-lab ``vm`` tool.
-
     \b
     Quick-start examples:
-      vm create test123 --cpus 2 --memory 2048
-      vm create apache --cpus 2 --memory 2048 --dist apache
-      vm list
-      vm start test123
-      vm stop test123
-      vm playbook test123 apache.yml
-      vm remove test123
+      tuxlablab create test123 --cpus 2 --memory 2048
+      tuxlablab create apache --cpus 2 --memory 2048 --dist apache
+      tuxlablab list
+      tuxlablab start test123
+      tuxlablab stop test123
+      tuxlablab playbook test123 apache.yml
+      tuxlablab remove test123
+      tuxlablab dist-add centos9 "CentOS 9" centos9.qcow2
+      tuxlablab settings
     """
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -121,8 +122,8 @@ def cmd_create(hostname: str, cpus: int, memory: int, dist: str | None) -> None:
 
     \b
     Examples:
-      vm create test123 --cpus 2 --memory 2048
-      vm create apache  --cpus 2 --memory 2048 --dist apache
+      tuxlablab create test123 --cpus 2 --memory 2048
+      tuxlablab create apache  --cpus 2 --memory 2048 --dist apache
     """
     lines: list[str] = []
     mgr = _manager()
@@ -221,8 +222,8 @@ def cmd_playbook(hostname: str, playbook: str | None) -> None:
 
     \b
     HOSTNAME  Target VM (short name or FQDN)
-    PLAYBOOK  Playbook filename (in the playbooks directory) or an
-              absolute path. If omitted, available playbooks are listed.
+    PLAYBOOK  Playbook filename (in playbooks directory) or absolute path.
+              If omitted, available playbooks are listed.
     """
     mgr = _manager()
     if not playbook:
@@ -258,26 +259,28 @@ def cmd_pb(ctx: click.Context, hostname: str, playbook: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# distributions
+# distributions (list)
 # ---------------------------------------------------------------------------
 
 
 @main.command(name="distributions")
 def cmd_distributions() -> None:
-    """List available distributions."""
+    """List distributions stored in the database."""
     mgr = _manager()
     dists = mgr.list_distributions()
     if not dists:
         click.echo(
             "No distributions defined. "
-            f"Create .dist files in {config.distributions_dir}"
+            "Add one with: tuxlablab dist-add <name> <display-name> <image-file>"
         )
         return
     click.echo("Available distributions:")
+    _pad = " " * 22
     for d in dists:
         click.echo(f"  {d.name:20s}  {d.display_name}")
+        click.echo(f"{_pad}image: {d.image_file}")
         if d.playbooks:
-            click.echo(f"  {'':20s}  playbooks: {', '.join(d.playbooks)}")
+            click.echo(f"{_pad}playbooks: {', '.join(d.playbooks)}")
 
 
 @main.command(name="dists", hidden=True)
@@ -287,11 +290,112 @@ def cmd_dists(ctx: click.Context) -> None:
     ctx.invoke(cmd_distributions)
 
 
-@main.command(name="dist", hidden=True)
-@click.pass_context
-def cmd_dist(ctx: click.Context) -> None:
-    """Alias for 'distributions'."""
-    ctx.invoke(cmd_distributions)
+# ---------------------------------------------------------------------------
+# dist-add
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="dist-add")
+@click.argument("name")
+@click.argument("display_name")
+@click.argument("image_file")
+@click.option(
+    "--playbooks", "-p", default="",
+    help="Space-separated list of playbook filenames to run after creation"
+)
+def cmd_dist_add(name: str, display_name: str, image_file: str, playbooks: str) -> None:
+    """Add or update a distribution in the database.
+
+    \b
+    NAME          Short identifier (e.g. centos9)
+    DISPLAY_NAME  Human-readable label (e.g. "CentOS Stream 9")
+    IMAGE_FILE    qcow2 filename inside the images directory
+    """
+    _db.upsert_distribution(
+        name=name,
+        display_name=display_name,
+        image_file=image_file,
+        playbooks=playbooks,
+    )
+    _ok(f"Distribution '{name}' saved.")
+
+
+# ---------------------------------------------------------------------------
+# dist-remove
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="dist-remove")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def cmd_dist_remove(name: str, yes: bool) -> None:
+    """Remove a distribution from the database."""
+    if not yes:
+        click.confirm(f"Remove distribution '{name}'?", abort=True)
+    removed = _db.delete_distribution(name)
+    if removed:
+        _ok(f"Distribution '{name}' removed.")
+    else:
+        _err(f"Distribution '{name}' not found.")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# dist-import  (import legacy .dist files)
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="dist-import")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False))
+def cmd_dist_import(directory: str) -> None:
+    """Import legacy .dist files from DIRECTORY into the database."""
+    from pathlib import Path
+    n = _db.import_dist_files(Path(directory))
+    if n:
+        _ok(f"Imported {n} distribution(s) from {directory}")
+    else:
+        _warn(f"No .dist files found in {directory}")
+
+
+# ---------------------------------------------------------------------------
+# settings
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="settings")
+@click.argument("key", required=False)
+@click.argument("value", required=False)
+def cmd_settings(key: str | None, value: str | None) -> None:
+    """View or change lab settings stored in the database.
+
+    \b
+    No arguments:    list all settings
+    KEY only:        show the value of KEY
+    KEY VALUE:       set KEY to VALUE
+
+    \b
+    Available settings: labdomain, labgw, labdhcpstart, labdhcpend,
+                        rhnusername, rhnpassword
+    """
+    if key is None:
+        rows = _db.list_settings()
+        if not rows:
+            click.echo("No settings found.")
+            return
+        click.echo("Lab settings:")
+        for row in rows:
+            k, v = row["key"], row["value"]
+            display = "***" if "password" in k.lower() and v else v
+            click.echo(f"  {k:20s}  {display}")
+        return
+
+    if value is None:
+        val = _db.get_setting(key)
+        click.echo(f"{key} = {val!r}")
+        return
+
+    _db.set_setting(key, value)
+    _ok(f"Setting '{key}' updated.")
 
 
 # ---------------------------------------------------------------------------

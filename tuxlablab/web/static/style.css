@@ -211,6 +211,9 @@ body {
 
 .muted { color: var(--muted); font-size: .9rem; }
 
+.inline-settings-form { display: flex; gap: .5rem; align-items: center; }
+.form-control-inline { width: auto; flex: 1; min-width: 0; }
+
 /* ── Footer ── */
 footer {
   text-align: center;

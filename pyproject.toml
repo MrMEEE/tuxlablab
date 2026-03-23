@@ -24,7 +24,7 @@ libvirt = [
 ]
 
 [project.scripts]
-vm = "tuxlablab.cli:main"
+tuxlablab = "tuxlablab.cli:main"
 tuxlablab-server = "tuxlablab.api:run_server"
 
 [tool.setuptools.packages.find]

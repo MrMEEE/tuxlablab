@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+import tuxlablab.db as _db
 from tuxlablab.config import config
 from tuxlablab.core import VMManager, VMManagerError
 
@@ -54,8 +56,18 @@ class RunPlaybookRequest(BaseModel):
     playbook: str
 
 
+class UpsertDistributionRequest(BaseModel):
+    display_name: str
+    image_file: str
+    playbooks: str = ""
+
+
+class UpsertSettingRequest(BaseModel):
+    value: str
+
+
 # ---------------------------------------------------------------------------
-# REST API  (/api/*)
+# REST API – VMs
 # ---------------------------------------------------------------------------
 
 
@@ -101,11 +113,7 @@ def api_create_vm(req: CreateVMRequest, background_tasks: BackgroundTasks):
     def _task():
         try:
             _manager.create_vm(
-                req.hostname,
-                req.vcpus,
-                req.ram_mb,
-                req.distribution,
-                output_lines,
+                req.hostname, req.vcpus, req.ram_mb, req.distribution, output_lines,
             )
         except VMManagerError as exc:
             output_lines.append(f"ERROR: {exc}")
@@ -159,19 +167,75 @@ def api_run_playbook(name: str, req: RunPlaybookRequest, background_tasks: Backg
     return {"status": "accepted", "message": f"Running playbook '{req.playbook}' on '{name}'"}
 
 
+# ---------------------------------------------------------------------------
+# REST API – Distributions (DB-backed CRUD)
+# ---------------------------------------------------------------------------
+
+
 @app.get("/api/distributions", tags=["distributions"])
 def api_list_distributions():
-    """Return all defined distributions."""
-    dists = _manager.list_distributions()
-    return [
-        {
-            "name": d.name,
-            "display_name": d.display_name,
-            "image_file": d.image_file,
-            "playbooks": d.playbooks,
-        }
-        for d in dists
-    ]
+    """Return all distributions stored in the database."""
+    return _db.list_distributions()
+
+
+@app.get("/api/distributions/{name}", tags=["distributions"])
+def api_get_distribution(name: str):
+    """Return a single distribution by name."""
+    row = _db.get_distribution(name)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Distribution '{name}' not found.")
+    return row
+
+
+@app.put("/api/distributions/{name}", tags=["distributions"])
+def api_upsert_distribution(name: str, req: UpsertDistributionRequest):
+    """Create or update a distribution."""
+    _db.upsert_distribution(
+        name=name,
+        display_name=req.display_name,
+        image_file=req.image_file,
+        playbooks=req.playbooks,
+    )
+    return {"status": "ok", "name": name}
+
+
+@app.delete("/api/distributions/{name}", tags=["distributions"])
+def api_delete_distribution(name: str):
+    """Delete a distribution."""
+    removed = _db.delete_distribution(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Distribution '{name}' not found.")
+    return {"status": "ok", "name": name}
+
+
+# ---------------------------------------------------------------------------
+# REST API – Settings (DB-backed)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/settings", tags=["settings"])
+def api_list_settings():
+    """Return all lab settings stored in the database."""
+    return _db.list_settings()
+
+
+@app.get("/api/settings/{key}", tags=["settings"])
+def api_get_setting(key: str):
+    """Return a single setting value."""
+    val = _db.get_setting(key)
+    return {"key": key, "value": val}
+
+
+@app.put("/api/settings/{key}", tags=["settings"])
+def api_set_setting(key: str, req: UpsertSettingRequest):
+    """Set a lab setting value."""
+    _db.set_setting(key, req.value)
+    return {"status": "ok", "key": key, "value": req.value}
+
+
+# ---------------------------------------------------------------------------
+# REST API – Playbooks + health
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/playbooks", tags=["playbooks"])
@@ -186,7 +250,7 @@ def api_health():
 
 
 # ---------------------------------------------------------------------------
-# Streaming endpoint for real-time VM creation output
+# Streaming endpoint
 # ---------------------------------------------------------------------------
 
 
@@ -199,19 +263,14 @@ def api_create_vm_stream(req: CreateVMRequest):
     def _task():
         try:
             _manager.create_vm(
-                req.hostname,
-                req.vcpus,
-                req.ram_mb,
-                req.distribution,
-                output_lines,
+                req.hostname, req.vcpus, req.ram_mb, req.distribution, output_lines,
             )
         except VMManagerError as exc:
             output_lines.append(f"ERROR: {exc}")
         finally:
             done.set()
 
-    t = threading.Thread(target=_task, daemon=True)
-    t.start()
+    threading.Thread(target=_task, daemon=True).start()
 
     def _generate() -> Generator[str, None, None]:
         sent = 0
@@ -220,7 +279,6 @@ def api_create_vm_stream(req: CreateVMRequest):
                 yield f"data: {output_lines[sent]}\n\n"
                 sent += 1
             if not done.is_set():
-                import time
                 time.sleep(0.1)
         yield "data: [DONE]\n\n"
 
@@ -228,7 +286,7 @@ def api_create_vm_stream(req: CreateVMRequest):
 
 
 # ---------------------------------------------------------------------------
-# Web interface  (HTML routes)
+# Web interface – VM routes
 # ---------------------------------------------------------------------------
 
 
@@ -273,29 +331,19 @@ def web_create_vm(
 
     def _task():
         try:
-            _manager.create_vm(
-                hostname,
-                cpus,
-                ram_mb,
-                distribution or None,
-                output_lines,
-            )
+            _manager.create_vm(hostname, cpus, ram_mb, distribution or None, output_lines)
         except VMManagerError as exc:
             output_lines.append(f"ERROR: {exc}")
 
     background_tasks.add_task(_task)
     return templates.TemplateResponse(
         "create_vm_progress.html",
-        {
-            "request": request,
-            "hostname": config.full_hostname(hostname),
-        },
+        {"request": request, "hostname": config.full_hostname(hostname)},
     )
 
 
 @app.post("/vms/{name}/start", response_class=HTMLResponse, tags=["web"])
 def web_start_vm(request: Request, name: str):
-    """Handle start-VM form submission and redirect back."""
     try:
         _manager.start_vm(name)
     except VMManagerError:
@@ -305,7 +353,6 @@ def web_start_vm(request: Request, name: str):
 
 @app.post("/vms/{name}/stop", response_class=HTMLResponse, tags=["web"])
 def web_stop_vm(request: Request, name: str):
-    """Handle stop-VM form submission and redirect back."""
     try:
         _manager.stop_vm(name)
     except VMManagerError:
@@ -315,7 +362,6 @@ def web_stop_vm(request: Request, name: str):
 
 @app.post("/vms/{name}/remove", response_class=HTMLResponse, tags=["web"])
 def web_remove_vm(request: Request, name: str):
-    """Handle remove-VM form submission and redirect to dashboard."""
     try:
         _manager.remove_vm(name)
     except VMManagerError:
@@ -330,7 +376,6 @@ def web_run_playbook(
     background_tasks: BackgroundTasks,
     playbook: str = Form(...),
 ):
-    """Handle run-playbook form submission."""
     output_lines: list[str] = []
 
     def _task():
@@ -342,11 +387,7 @@ def web_run_playbook(
     background_tasks.add_task(_task)
     return templates.TemplateResponse(
         "playbook_progress.html",
-        {
-            "request": request,
-            "hostname": name,
-            "playbook": playbook,
-        },
+        {"request": request, "hostname": name, "playbook": playbook},
     )
 
 
@@ -361,6 +402,63 @@ def web_vm_detail(request: Request, name: str):
         "vm_detail.html",
         {"request": request, "vm": vm, "playbooks": playbooks},
     )
+
+
+# ---------------------------------------------------------------------------
+# Web interface – Distributions management
+# ---------------------------------------------------------------------------
+
+
+@app.get("/distributions", response_class=HTMLResponse, tags=["web"])
+def web_distributions(request: Request):
+    """Distributions management page."""
+    dists = _db.list_distributions()
+    return templates.TemplateResponse(
+        "distributions.html",
+        {"request": request, "distributions": dists},
+    )
+
+
+@app.post("/distributions/add", response_class=HTMLResponse, tags=["web"])
+def web_distribution_add(
+    request: Request,
+    name: str = Form(...),
+    display_name: str = Form(...),
+    image_file: str = Form(...),
+    playbooks: str = Form(""),
+):
+    _db.upsert_distribution(
+        name=name, display_name=display_name, image_file=image_file, playbooks=playbooks,
+    )
+    return RedirectResponse(url="/distributions", status_code=303)
+
+
+@app.post("/distributions/{name}/delete", response_class=HTMLResponse, tags=["web"])
+def web_distribution_delete(request: Request, name: str):
+    _db.delete_distribution(name)
+    return RedirectResponse(url="/distributions", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Web interface – Settings management
+# ---------------------------------------------------------------------------
+
+
+@app.get("/settings", response_class=HTMLResponse, tags=["web"])
+def web_settings(request: Request):
+    """Lab settings management page."""
+    settings = _db.list_settings()
+    return templates.TemplateResponse(
+        "settings.html",
+        {"request": request, "settings": settings},
+    )
+
+
+@app.post("/settings/{key}", response_class=HTMLResponse, tags=["web"])
+def web_setting_update(request: Request, key: str, value: str = Form(...)):
+    """Update a single setting value."""
+    _db.set_setting(key, value)
+    return RedirectResponse(url="/settings", status_code=303)
 
 
 # ---------------------------------------------------------------------------
