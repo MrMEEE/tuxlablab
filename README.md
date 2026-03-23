@@ -30,19 +30,28 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Copy `config/tuxlablab.conf.example` to `~/.config/tuxlablab/config.ini` and
-adjust the values:
+Runtime settings are stored in the SQLite database and can be updated from:
+
+* CLI: `tuxlablab settings`
+* Web UI: `/settings`
+* REST API: `/api/settings`
+
+Database location:
+
+* Set `TUXLABLAB_DB` to an absolute path to control where the SQLite DB is stored.
+* If unset, default path is `${XDG_DATA_HOME:-~/.local/share}/tuxlablab/tuxlablab.db`.
+
+Examples:
 
 ```bash
-mkdir -p ~/.config/tuxlablab
-cp config/tuxlablab.conf.example ~/.config/tuxlablab/config.ini
-$EDITOR ~/.config/tuxlablab/config.ini
-```
+# list all settings
+tuxlablab settings
 
-You can also point to a custom config file via the environment variable:
+# read one value
+tuxlablab settings labdomain
 
-```bash
-export TUXLABLAB_CONFIG=/path/to/config.ini
+# update a value
+tuxlablab settings labdomain mylab.lan
 ```
 
 ## CLI usage
@@ -74,7 +83,34 @@ vm distributions
 vm server
 # or
 tuxlablab-server
+
+# Install/start a user systemd service (with linger)
+vm service-install
+
+# Remove the user systemd service
+vm service-uninstall
 ```
+
+### User systemd service
+
+Use the CLI to manage a user-level systemd unit:
+
+```bash
+# install + start and try to enable linger for current user
+tuxlablab service-install
+
+# custom unit name
+tuxlablab service-install --name tuxlablab-web
+
+# remove unit and stop service
+tuxlablab service-uninstall
+
+# optionally disable linger while uninstalling
+tuxlablab service-uninstall --disable-linger
+```
+
+The unit file is created under `~/.config/systemd/user/` and runs
+`python -m tuxlablab.api` using your current Python environment.
 
 ## Web interface
 
@@ -131,6 +167,9 @@ repository.
 | DELETE | `/api/vms/{name}` | Remove VM |
 | POST | `/api/vms/{name}/playbook` | Run playbook on VM |
 | GET | `/api/distributions` | List distributions |
+| GET | `/api/settings` | List settings |
+| GET | `/api/settings/{key}` | Get setting |
+| PUT | `/api/settings/{key}` | Set setting |
 | GET | `/api/playbooks` | List playbooks |
 | GET | `/api/health` | Health check |
 

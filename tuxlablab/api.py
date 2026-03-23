@@ -222,6 +222,8 @@ def api_list_settings():
 @app.get("/api/settings/{key}", tags=["settings"])
 def api_get_setting(key: str):
     """Return a single setting value."""
+    if not _db.is_valid_setting_key(key):
+        raise HTTPException(status_code=404, detail=f"Unknown setting '{key}'")
     val = _db.get_setting(key)
     return {"key": key, "value": val}
 
@@ -229,7 +231,10 @@ def api_get_setting(key: str):
 @app.put("/api/settings/{key}", tags=["settings"])
 def api_set_setting(key: str, req: UpsertSettingRequest):
     """Set a lab setting value."""
-    _db.set_setting(key, req.value)
+    try:
+        _db.set_setting(key, req.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return {"status": "ok", "key": key, "value": req.value}
 
 
@@ -457,7 +462,15 @@ def web_settings(request: Request):
 @app.post("/settings/{key}", response_class=HTMLResponse, tags=["web"])
 def web_setting_update(request: Request, key: str, value: str = Form(...)):
     """Update a single setting value."""
-    _db.set_setting(key, value)
+    try:
+        _db.set_setting(key, value)
+    except ValueError as exc:
+        settings = _db.list_settings()
+        return templates.TemplateResponse(
+            "settings.html",
+            {"request": request, "settings": settings, "error": str(exc)},
+            status_code=400,
+        )
     return RedirectResponse(url="/settings", status_code=303)
 
 

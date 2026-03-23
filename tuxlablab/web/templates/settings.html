@@ -10,6 +10,20 @@
   Changes take effect immediately for new operations.
 </p>
 
+<p class="muted" style="margin-bottom:1rem; font-size:.9rem;">
+  Format notes:
+  <strong>host</strong> accepts an IP, hostname, or <code>localhost</code>;
+  <strong>port</strong> must be 1-65535;
+  <strong>labgw</strong>, <strong>labdhcpstart</strong>, and <strong>labdhcpend</strong>
+  must be valid IPv4 addresses, and DHCP start must be less than or equal to DHCP end.
+</p>
+
+{% if error %}
+<div class="alert alert-danger" style="margin-bottom:1rem;">
+  {{ error }}
+</div>
+{% endif %}
+
 <div class="card">
   {% if settings %}
   <table class="detail-table">

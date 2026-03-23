@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
 import sys
 
 import click
@@ -37,6 +42,51 @@ def _err(msg: str) -> None:
 
 def _warn(msg: str) -> None:
     click.echo(f"{YELLOW}{msg}{RESET}", err=True)
+
+
+def _run_cmd(cmd: list[str]) -> None:
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise click.ClickException(f"Command not found: {cmd[0]}")
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detail = stderr or stdout or str(exc)
+        raise click.ClickException(detail)
+
+
+def _normalize_unit_name(name: str) -> str:
+    unit = name if name.endswith(".service") else f"{name}.service"
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit):
+        raise click.ClickException(
+            "Invalid service name. Use letters, numbers, '_', '.', '@', '-' only."
+        )
+    return unit
+
+
+def _build_user_service_text(db_path: str | None = None) -> str:
+    exec_cmd = f"{shlex.quote(sys.executable)} -m tuxlablab.api"
+    lines = [
+        "[Unit]",
+        "Description=tuxlablab user service",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"ExecStart={exec_cmd}",
+        "Restart=on-failure",
+        "RestartSec=3",
+        "Environment=PYTHONUNBUFFERED=1",
+        f"WorkingDirectory={Path.home()}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+    ]
+    if db_path:
+        lines.insert(11, f"Environment=TUXLABLAB_DB={db_path}")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +425,8 @@ def cmd_settings(key: str | None, value: str | None) -> None:
 
     \b
     Available settings: labdomain, labgw, labdhcpstart, labdhcpend,
-                        rhnusername, rhnpassword
+                        rhnusername, rhnpassword, dc_home, ssh_key_path,
+                        libvirt_uri, host, port
     """
     if key is None:
         rows = _db.list_settings()
@@ -389,13 +440,107 @@ def cmd_settings(key: str | None, value: str | None) -> None:
             click.echo(f"  {k:20s}  {display}")
         return
 
+    if not _db.is_valid_setting_key(key):
+        _err(
+            f"Unknown setting '{key}'. "
+            f"Allowed keys: {', '.join(_db.setting_keys())}"
+        )
+        sys.exit(1)
+
     if value is None:
         val = _db.get_setting(key)
         click.echo(f"{key} = {val!r}")
         return
 
-    _db.set_setting(key, value)
+    try:
+        _db.set_setting(key, value)
+    except ValueError as exc:
+        _err(str(exc))
+        sys.exit(1)
     _ok(f"Setting '{key}' updated.")
+
+
+# ---------------------------------------------------------------------------
+# service-install / service-uninstall
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="service-install")
+@click.option("--name", default="tuxlablab", show_default=True, help="Systemd user service name")
+@click.option(
+    "--db-path",
+    default=None,
+    help="SQLite DB path to inject via TUXLABLAB_DB (default: current env value if set)",
+)
+@click.option(
+    "--enable-linger/--no-enable-linger",
+    default=True,
+    show_default=True,
+    help="Run 'loginctl enable-linger' for the current user",
+)
+def cmd_service_install(name: str, db_path: str | None, enable_linger: bool) -> None:
+    """Install and start a user-level systemd service for tuxlablab."""
+    unit = _normalize_unit_name(name)
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_file = service_dir / unit
+
+    resolved_db_path = db_path or os.environ.get("TUXLABLAB_DB")
+
+    service_dir.mkdir(parents=True, exist_ok=True)
+    service_file.write_text(_build_user_service_text(resolved_db_path))
+
+    _run_cmd(["systemctl", "--user", "daemon-reload"])
+    _run_cmd(["systemctl", "--user", "enable", "--now", unit])
+
+    if enable_linger:
+        user = os.environ.get("USER") or ""
+        try:
+            _run_cmd(["loginctl", "enable-linger", user])
+        except click.ClickException as exc:
+            _warn(
+                "Service installed and started, but linger could not be enabled automatically. "
+                f"You may need elevated permissions: loginctl enable-linger {user}\n"
+                f"Details: {exc}"
+            )
+
+    _ok(f"Installed and started user service '{unit}'.")
+    click.echo(f"Unit file: {service_file}")
+
+
+@main.command(name="service-uninstall")
+@click.option("--name", default="tuxlablab", show_default=True, help="Systemd user service name")
+@click.option(
+    "--disable-linger",
+    is_flag=True,
+    help="Also run 'loginctl disable-linger' for the current user",
+)
+def cmd_service_uninstall(name: str, disable_linger: bool) -> None:
+    """Stop and remove the tuxlablab user-level systemd service."""
+    unit = _normalize_unit_name(name)
+    service_file = Path.home() / ".config" / "systemd" / "user" / unit
+
+    try:
+        _run_cmd(["systemctl", "--user", "disable", "--now", unit])
+    except click.ClickException as exc:
+        _warn(f"Could not disable/stop '{unit}': {exc}")
+
+    if service_file.exists():
+        service_file.unlink()
+
+    _run_cmd(["systemctl", "--user", "daemon-reload"])
+
+    if disable_linger:
+        user = os.environ.get("USER") or ""
+        try:
+            _run_cmd(["loginctl", "disable-linger", user])
+        except click.ClickException as exc:
+            _warn(
+                "Service removed, but linger could not be disabled automatically. "
+                f"You may need elevated permissions: loginctl disable-linger {user}\n"
+                f"Details: {exc}"
+            )
+
+    _ok(f"Uninstalled user service '{unit}'.")
 
 
 # ---------------------------------------------------------------------------

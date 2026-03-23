@@ -8,12 +8,13 @@ All variable / user-managed data is stored here:
 
 from __future__ import annotations
 
+import ipaddress
+import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
-
-from tuxlablab.config import config as _global_config
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -39,15 +40,60 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-# Default lab settings that are pre-populated on first run.
-_DEFAULT_SETTINGS: list[tuple[str, str]] = [
-    ("labdomain",     "mylab.lan"),
-    ("labgw",         "192.168.124.1"),
-    ("labdhcpstart",  "192.168.124.2"),
-    ("labdhcpend",    "192.168.124.250"),
-    ("rhnusername",   ""),
-    ("rhnpassword",   ""),
-]
+_DEFAULT_DC_HOME = str(Path.home() / "ansible" / "localdc")
+_DEFAULT_SSH_KEY = str(Path.home() / ".ssh" / "id_rsa.pub")
+
+# Full settings set (replaces options formerly stored in config/*.conf).
+_SETTINGS_DEFAULTS: dict[str, str] = {
+    "labdomain": "mylab.lan",
+    "labgw": "192.168.124.1",
+    "labdhcpstart": "192.168.124.2",
+    "labdhcpend": "192.168.124.250",
+    "rhnusername": "",
+    "rhnpassword": "",
+    "dc_home": _DEFAULT_DC_HOME,
+    "ssh_key_path": _DEFAULT_SSH_KEY,
+    "libvirt_uri": "qemu:///system",
+    "host": "0.0.0.0",
+    "port": "8080",
+}
+
+_REQUIRED_SETTING_KEYS = {
+    "labdomain",
+    "labgw",
+    "labdhcpstart",
+    "labdhcpend",
+    "dc_home",
+    "ssh_key_path",
+    "libvirt_uri",
+    "host",
+    "port",
+}
+
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9-]{1,63}(?<!-))(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+)
+
+
+def _is_valid_ipv4(value: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return isinstance(parsed, ipaddress.IPv4Address)
+
+
+def _is_valid_host(value: str) -> bool:
+    value = value.strip()
+    if not value:
+        return False
+    if value == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return bool(_HOSTNAME_RE.match(value))
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +101,17 @@ _DEFAULT_SETTINGS: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 
+def _default_db_path() -> Path:
+    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
+    return data_home / "tuxlablab" / "tuxlablab.db"
+
+
 def _db_path() -> Path:
     """Return the path to the SQLite database file."""
-    return Path(_global_config.dc_home) / "tuxlablab.db"
+    env_db = os.environ.get("TUXLABLAB_DB")
+    if env_db:
+        return Path(env_db)
+    return _default_db_path()
 
 
 def init_db(path: Path | None = None) -> None:
@@ -66,13 +120,11 @@ def init_db(path: Path | None = None) -> None:
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.executescript(_DDL)
-        # Insert defaults only if settings table is empty
-        cur = conn.execute("SELECT COUNT(*) FROM settings")
-        if cur.fetchone()[0] == 0:
-            conn.executemany(
-                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
-                _DEFAULT_SETTINGS,
-            )
+        # Ensure all known settings keys exist without overriding user values.
+        conn.executemany(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            list(_SETTINGS_DEFAULTS.items()),
+        )
         conn.commit()
 
 
@@ -200,6 +252,55 @@ def list_vm_inventories(db_path: Path | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def setting_keys() -> list[str]:
+    return sorted(_SETTINGS_DEFAULTS.keys())
+
+
+def is_valid_setting_key(key: str) -> bool:
+    return key in _SETTINGS_DEFAULTS
+
+
+def validate_setting_value(key: str, value: str, db_path: Path | None = None) -> str:
+    if key not in _SETTINGS_DEFAULTS:
+        allowed = ", ".join(setting_keys())
+        raise ValueError(f"Unsupported setting '{key}'. Allowed keys: {allowed}")
+
+    if key in _REQUIRED_SETTING_KEYS and not value.strip():
+        raise ValueError(f"Setting '{key}' cannot be empty")
+
+    if key in {"labgw", "labdhcpstart", "labdhcpend"} and not _is_valid_ipv4(value):
+        raise ValueError(f"Setting '{key}' must be a valid IPv4 address")
+
+    if key == "host" and not _is_valid_host(value):
+        raise ValueError(
+            "Setting 'host' must be a valid IP address, hostname, or 'localhost'"
+        )
+
+    if key == "port":
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError("Setting 'port' must be an integer") from exc
+        if port < 1 or port > 65535:
+            raise ValueError("Setting 'port' must be between 1 and 65535")
+
+    if key in {"labdhcpstart", "labdhcpend"}:
+        if key == "labdhcpstart":
+            start_ip = ipaddress.IPv4Address(value)
+            end_ip = ipaddress.IPv4Address(
+                get_setting("labdhcpend", _SETTINGS_DEFAULTS["labdhcpend"], db_path=db_path)
+            )
+        else:
+            start_ip = ipaddress.IPv4Address(
+                get_setting("labdhcpstart", _SETTINGS_DEFAULTS["labdhcpstart"], db_path=db_path)
+            )
+            end_ip = ipaddress.IPv4Address(value)
+        if start_ip > end_ip:
+            raise ValueError("DHCP range is invalid: labdhcpstart must be <= labdhcpend")
+
+    return value
+
+
 def get_setting(key: str, default: str = "", db_path: Path | None = None) -> str:
     with get_db(db_path) as conn:
         row = conn.execute(
@@ -209,11 +310,12 @@ def get_setting(key: str, default: str = "", db_path: Path | None = None) -> str
 
 
 def set_setting(key: str, value: str, db_path: Path | None = None) -> None:
+    validated = validate_setting_value(key, value, db_path=db_path)
     with get_db(db_path) as conn:
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
+            (key, validated),
         )
 
 

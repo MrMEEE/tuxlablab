@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import configparser
-import os
 from pathlib import Path
+
+import tuxlablab.db as _db
 
 
 _DEFAULT_DC_HOME = str(Path.home() / "ansible" / "localdc")
@@ -24,56 +24,60 @@ _DEFAULTS = {
     "port": "8080",
 }
 
-_CONFIG_SEARCH_PATHS = [
-    Path.home() / ".config" / "tuxlablab" / "config.ini",
-    Path("/etc/tuxlablab/config.ini"),
-]
-
-
-def _find_config_file() -> Path | None:
-    env_path = os.environ.get("TUXLABLAB_CONFIG")
-    if env_path:
-        p = Path(env_path)
-        if p.exists():
-            return p
-    for candidate in _CONFIG_SEARCH_PATHS:
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def _load_config() -> dict[str, str]:
-    cfg: dict[str, str] = dict(_DEFAULTS)
-    path = _find_config_file()
-    if path is None:
-        return cfg
-    parser = configparser.ConfigParser()
-    parser.read(path)
-    section = "tuxlablab"
-    if section not in parser:
-        return cfg
-    for key in _DEFAULTS:
-        if parser.has_option(section, key):
-            cfg[key] = parser.get(section, key)
-    return cfg
-
 
 class Config:
-    """Holds all runtime configuration for tuxlablab."""
+    """Holds runtime configuration backed by the SQLite settings table."""
 
-    def __init__(self) -> None:
-        raw = _load_config()
-        self.labdomain: str = raw["labdomain"]
-        self.labgw: str = raw["labgw"]
-        self.labdhcpstart: str = raw["labdhcpstart"]
-        self.labdhcpend: str = raw["labdhcpend"]
-        self.rhnusername: str = raw["rhnusername"]
-        self.rhnpassword: str = raw["rhnpassword"]
-        self.dc_home: Path = Path(raw["dc_home"])
-        self.ssh_key_path: Path = Path(raw["ssh_key_path"])
-        self.libvirt_uri: str = raw["libvirt_uri"]
-        self.host: str = raw["host"]
-        self.port: int = int(raw["port"])
+    def _get(self, key: str) -> str:
+        return _db.get_setting(key, _DEFAULTS[key])
+
+    @property
+    def labdomain(self) -> str:
+        return self._get("labdomain")
+
+    @property
+    def labgw(self) -> str:
+        return self._get("labgw")
+
+    @property
+    def labdhcpstart(self) -> str:
+        return self._get("labdhcpstart")
+
+    @property
+    def labdhcpend(self) -> str:
+        return self._get("labdhcpend")
+
+    @property
+    def rhnusername(self) -> str:
+        return self._get("rhnusername")
+
+    @property
+    def rhnpassword(self) -> str:
+        return self._get("rhnpassword")
+
+    @property
+    def dc_home(self) -> Path:
+        return Path(self._get("dc_home"))
+
+    @property
+    def ssh_key_path(self) -> Path:
+        return Path(self._get("ssh_key_path"))
+
+    @property
+    def libvirt_uri(self) -> str:
+        return self._get("libvirt_uri")
+
+    @property
+    def host(self) -> str:
+        return self._get("host")
+
+    @property
+    def port(self) -> int:
+        raw = self._get("port")
+        try:
+            return int(raw)
+        except ValueError:
+            return int(_DEFAULTS["port"])
 
     # Derived paths -----------------------------------------------------------
 
