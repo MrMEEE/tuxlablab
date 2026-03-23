@@ -9,15 +9,55 @@ export TUXLABLAB_DB="$DB_PATH"
 
 DB_DIR="$(dirname "$DB_PATH")"
 VENV_DIR="$DB_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python"
+PIP_BIN="$VENV_DIR/bin/pip"
+CLI_BIN="$VENV_DIR/bin/tuxlablab"
 
 printf "Using database: %s\n" "$TUXLABLAB_DB"
 printf "Using virtualenv: %s\n" "$VENV_DIR"
 
 mkdir -p "$DB_DIR"
-python3 -m venv "$VENV_DIR"
 
-"$VENV_DIR/bin/python" -m pip install --upgrade pip
-"$VENV_DIR/bin/pip" install -e "$SCRIPT_DIR"
+if [[ -x "$PYTHON_BIN" ]]; then
+  printf "Existing virtualenv detected, reusing it.\n"
+else
+  printf "Creating virtualenv...\n"
+  python3 -m venv "$VENV_DIR"
+fi
+
+if [[ -x "$CLI_BIN" ]]; then
+  printf "Existing tuxlablab install detected, updating...\n"
+else
+  printf "Installing tuxlablab...\n"
+fi
+
+"$PYTHON_BIN" -m pip install --upgrade pip
+"$PIP_BIN" install --upgrade -e "$SCRIPT_DIR"
+
+if command -v systemctl >/dev/null 2>&1; then
+  if [[ -f "$HOME/.config/systemd/user/tuxlablab.service" ]]; then
+    printf "Detected existing user service tuxlablab.service; reloading and restarting it...\n"
+    if systemctl --user daemon-reload >/dev/null 2>&1; then
+      if systemctl --user is-active --quiet tuxlablab.service; then
+        if systemctl --user restart tuxlablab.service; then
+          printf "Restarted user service tuxlablab.service\n"
+        else
+          printf "Warning: failed to restart user service tuxlablab.service\n" >&2
+        fi
+      else
+        if systemctl --user is-enabled --quiet tuxlablab.service; then
+          if systemctl --user start tuxlablab.service; then
+            printf "Started enabled user service tuxlablab.service\n"
+          else
+            printf "Warning: failed to start enabled user service tuxlablab.service\n" >&2
+          fi
+        fi
+      fi
+    else
+      printf "Warning: could not access user systemd to reload/restart service in this session\n" >&2
+    fi
+  fi
+fi
 
 BIN_DIR="$HOME/bin"
 LAUNCHER="$BIN_DIR/tuxlablab"
@@ -38,10 +78,10 @@ fi
 printf "\nInstall and start user systemd service now? [y/N]: "
 read -r reply
 if [[ "$reply" =~ ^[Yy]$ ]]; then
-  "$VENV_DIR/bin/tuxlablab" service-install \
+  "$CLI_BIN" service-install \
     --db-path "$TUXLABLAB_DB" \
-    --python "$VENV_DIR/bin/python"
-  printf "Service installed with venv Python: %s\n" "$VENV_DIR/bin/python"
+    --python "$PYTHON_BIN"
+  printf "Service installed with venv Python: %s\n" "$PYTHON_BIN"
 else
   printf "Skipped service installation.\n"
 fi

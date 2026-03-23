@@ -307,8 +307,9 @@ def web_index(request: Request):
     except VMManagerError as exc:
         error = str(exc)
     return templates.TemplateResponse(
-        "index.html",
-        {"request": request, "vms": vms, "distributions": dists, "error": error},
+        request=request,
+        name="index.html",
+        context={"request": request, "vms": vms, "distributions": dists, "error": error},
     )
 
 
@@ -317,8 +318,9 @@ def web_create_vm_form(request: Request):
     """VM creation form."""
     dists = _manager.list_distributions()
     return templates.TemplateResponse(
-        "create_vm.html",
-        {"request": request, "distributions": dists},
+        request=request,
+        name="create_vm.html",
+        context={"request": request, "distributions": dists},
     )
 
 
@@ -342,8 +344,9 @@ def web_create_vm(
 
     background_tasks.add_task(_task)
     return templates.TemplateResponse(
-        "create_vm_progress.html",
-        {"request": request, "hostname": config.full_hostname(hostname)},
+        request=request,
+        name="create_vm_progress.html",
+        context={"request": request, "hostname": config.full_hostname(hostname)},
     )
 
 
@@ -391,8 +394,9 @@ def web_run_playbook(
 
     background_tasks.add_task(_task)
     return templates.TemplateResponse(
-        "playbook_progress.html",
-        {"request": request, "hostname": name, "playbook": playbook},
+        request=request,
+        name="playbook_progress.html",
+        context={"request": request, "hostname": name, "playbook": playbook},
     )
 
 
@@ -404,8 +408,9 @@ def web_vm_detail(request: Request, name: str):
         raise HTTPException(status_code=404, detail=f"VM '{name}' not found.")
     playbooks = _manager.list_playbooks()
     return templates.TemplateResponse(
-        "vm_detail.html",
-        {"request": request, "vm": vm, "playbooks": playbooks},
+        request=request,
+        name="vm_detail.html",
+        context={"request": request, "vm": vm, "playbooks": playbooks},
     )
 
 
@@ -419,8 +424,9 @@ def web_distributions(request: Request):
     """Distributions management page."""
     dists = _db.list_distributions()
     return templates.TemplateResponse(
-        "distributions.html",
-        {"request": request, "distributions": dists},
+        request=request,
+        name="distributions.html",
+        context={"request": request, "distributions": dists},
     )
 
 
@@ -454,8 +460,9 @@ def web_settings(request: Request):
     """Lab settings management page."""
     settings = _db.list_settings()
     return templates.TemplateResponse(
-        "settings.html",
-        {"request": request, "settings": settings},
+        request=request,
+        name="settings.html",
+        context={"request": request, "settings": settings},
     )
 
 
@@ -467,8 +474,9 @@ def web_setting_update(request: Request, key: str, value: str = Form(...)):
     except ValueError as exc:
         settings = _db.list_settings()
         return templates.TemplateResponse(
-            "settings.html",
-            {"request": request, "settings": settings, "error": str(exc)},
+            request=request,
+            name="settings.html",
+            context={"request": request, "settings": settings, "error": str(exc)},
             status_code=400,
         )
     return RedirectResponse(url="/settings", status_code=303)
