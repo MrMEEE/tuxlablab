@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – tuxlablab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Virtual Machines</h1>
+  <a href="/vms/create" class="btn btn-primary">＋ Create VM</a>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">
+  <strong>Error connecting to libvirt:</strong> {{ error }}
+  <p style="margin-top:.5rem;font-size:.85rem;">
+    Make sure <code>libvirtd</code> is running and <code>libvirt-python</code> is installed
+    (<code>pip install libvirt-python</code>).
+  </p>
+</div>
+{% elif not vms %}
+<div class="alert alert-info">No virtual machines are defined yet. <a href="/vms/create">Create one now</a>.</div>
+{% else %}
+
+<!-- Running VMs -->
+{% set running = vms | selectattr("state", "equalto", "running") | list %}
+{% if running %}
+<h2 class="section-title running">🟢 Running</h2>
+<table class="vm-table">
+  <thead>
+    <tr>
+      <th>Name</th><th>vCPUs</th><th>RAM (MB)</th><th>Disks</th><th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for vm in running %}
+    <tr>
+      <td><a href="/vms/{{ vm.name }}">{{ vm.name }}</a></td>
+      <td>{{ vm.vcpus }}</td>
+      <td>{{ vm.memory_mb }}</td>
+      <td class="disks">
+        {% for d in vm.disks %}<span class="disk-chip">{{ d }}</span>{% endfor %}
+      </td>
+      <td class="actions">
+        <form method="post" action="/vms/{{ vm.name }}/stop" class="inline-form">
+          <button class="btn btn-danger btn-sm" type="submit">Stop</button>
+        </form>
+        <form method="post" action="/vms/{{ vm.name }}/remove" class="inline-form"
+              onsubmit="return confirm('Remove {{ vm.name }} and its disks?')">
+          <button class="btn btn-remove btn-sm" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<!-- Stopped VMs -->
+{% set stopped = vms | rejectattr("state", "equalto", "running") | list %}
+{% if stopped %}
+<h2 class="section-title stopped">🔴 Stopped / Paused</h2>
+<table class="vm-table">
+  <thead>
+    <tr>
+      <th>Name</th><th>State</th><th>vCPUs</th><th>RAM (MB)</th><th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for vm in stopped %}
+    <tr>
+      <td><a href="/vms/{{ vm.name }}">{{ vm.name }}</a></td>
+      <td><span class="badge badge-stopped">{{ vm.state }}</span></td>
+      <td>{{ vm.vcpus }}</td>
+      <td>{{ vm.memory_mb }}</td>
+      <td class="actions">
+        <form method="post" action="/vms/{{ vm.name }}/start" class="inline-form">
+          <button class="btn btn-success btn-sm" type="submit">Start</button>
+        </form>
+        <form method="post" action="/vms/{{ vm.name }}/remove" class="inline-form"
+              onsubmit="return confirm('Remove {{ vm.name }} and its disks?')">
+          <button class="btn btn-remove btn-sm" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% endif %}
+
+{% if distributions %}
+<div class="dist-box">
+  <h3>Available Distributions</h3>
+  <ul class="dist-list">
+    {% for d in distributions %}
+    <li><strong>{{ d.name }}</strong> – {{ d.display_name }}
+      {% if d.playbooks %}
+        <span class="badge badge-info">{{ d.playbooks | join(', ') }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endblock %}

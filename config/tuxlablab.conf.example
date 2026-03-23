@@ -1,0 +1,29 @@
+[tuxlablab]
+# Lab domain – appended to short hostnames
+labdomain = mylab.lan
+
+# Default gateway for the lab network
+labgw = 192.168.124.1
+
+# DHCP range
+labdhcpstart = 192.168.124.2
+labdhcpend   = 192.168.124.250
+
+# Red Hat Network credentials (optional – used for RHEL registration)
+rhnusername =
+rhnpassword =
+
+# Base directory for VM images, playbooks and inventories
+# Defaults to ~/ansible/localdc
+dc_home = /home/YOUR_USER/ansible/localdc
+
+# SSH public key injected into new VMs
+# Defaults to ~/.ssh/id_rsa.pub
+ssh_key_path = /home/YOUR_USER/.ssh/id_rsa.pub
+
+# libvirt connection URI
+libvirt_uri = qemu:///system
+
+# Web server listen address and port
+host = 0.0.0.0
+port = 8080

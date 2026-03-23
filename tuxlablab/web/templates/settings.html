@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Settings – tuxlablab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Lab Settings</h1>
+</div>
+<p class="muted" style="margin-bottom:1.5rem">
+  Settings are stored in the SQLite database.
+  Changes take effect immediately for new operations.
+</p>
+
+<div class="card">
+  {% if settings %}
+  <table class="detail-table">
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in settings %}
+      <tr>
+        <td><code>{{ s.key }}</code></td>
+        <td>
+          <form method="post" action="/settings/{{ s.key }}" class="inline-settings-form">
+            <input type="{% if 'password' in s.key %}password{% else %}text{% endif %}"
+                   name="value"
+                   value="{{ s.value }}"
+                   class="form-control form-control-inline"/>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No settings found.</p>
+  {% endif %}
+</div>
+{% endblock %}

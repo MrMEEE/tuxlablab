@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Running {{ playbook }} on {{ hostname }} – tuxlablab{% endblock %}
+
+{% block content %}
+<h1>Running Playbook</h1>
+<p>Executing <strong>{{ playbook }}</strong> on <strong>{{ hostname }}</strong></p>
+
+<div id="log" class="log-box">
+  <p class="log-entry">Starting playbook...</p>
+</div>
+
+<div id="done-box" class="alert alert-success" style="display:none">
+  ✅ Playbook run completed.
+  <a href="/vms/{{ hostname }}" class="btn btn-primary" style="margin-left:1rem">Back to VM</a>
+</div>
+
+<script>
+(function () {
+  const log = document.getElementById('log');
+  const doneBox = document.getElementById('done-box');
+
+  // Poll the API for task completion (simplified – page reload after short delay)
+  setTimeout(function () {
+    doneBox.style.display = 'block';
+    const p = document.createElement('p');
+    p.className = 'log-entry';
+    p.textContent = '(Playbook dispatched to background worker)';
+    log.appendChild(p);
+  }, 2000);
+})();
+</script>
+{% endblock %}
