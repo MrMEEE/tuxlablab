@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ vm.name }} – tuxlablab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ vm.name }}</h1>
+  <span class="badge {% if vm.state == 'running' %}badge-running{% else %}badge-stopped{% endif %}">
+    {{ vm.state }}
+  </span>
+</div>
+
+<div class="vm-details card">
+  <table class="detail-table">
+    <tr><th>Name</th><td>{{ vm.name }}</td></tr>
+    <tr><th>State</th><td>{{ vm.state }}</td></tr>
+    <tr><th>vCPUs</th><td>{{ vm.vcpus }}</td></tr>
+    <tr><th>RAM</th><td>{{ vm.memory_mb }} MB</td></tr>
+    <tr>
+      <th>Disks</th>
+      <td>
+        {% if vm.disks %}
+          {% for d in vm.disks %}<div class="disk-chip">{{ d }}</div>{% endfor %}
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Actions</h2>
+  <div class="action-bar">
+    {% if vm.state == 'running' %}
+    <form method="post" action="/vms/{{ vm.name }}/stop" class="inline-form">
+      <button class="btn btn-danger">⏹ Stop</button>
+    </form>
+    {% else %}
+    <form method="post" action="/vms/{{ vm.name }}/start" class="inline-form">
+      <button class="btn btn-success">▶ Start</button>
+    </form>
+    {% endif %}
+
+    <form method="post" action="/vms/{{ vm.name }}/remove" class="inline-form"
+          onsubmit="return confirm('Remove {{ vm.name }} and ALL its disks? This cannot be undone.')">
+      <button class="btn btn-remove">🗑 Remove</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Run Playbook</h2>
+  {% if playbooks %}
+  <form method="post" action="/vms/{{ vm.name }}/playbook" class="vm-form">
+    <div class="form-group">
+      <label for="playbook">Select Playbook</label>
+      <select id="playbook" name="playbook" class="form-control">
+        {% for pb in playbooks %}
+        <option value="{{ pb }}">{{ pb }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">▶ Run Playbook</button>
+  </form>
+  {% else %}
+  <p class="muted">No playbooks defined.</p>
+  {% endif %}
+</div>
+
+<div id="playbook-output" class="log-box" style="display:none"></div>
+
+<a href="/" class="btn btn-secondary" style="margin-top:1rem">← Back to Dashboard</a>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Creating {{ hostname }} – tuxlablab{% endblock %}
+
+{% block content %}
+<h1>Creating VM: {{ hostname }}</h1>
+<p>The VM is being created in the background. Progress is shown below.</p>
+
+<div id="log" class="log-box">
+  <p class="log-entry">Starting...</p>
+</div>
+
+<div id="done-box" class="alert alert-success" style="display:none">
+  ✅ VM creation completed (or an error occurred – check the log above).
+  <a href="/" class="btn btn-primary" style="margin-left:1rem">Back to Dashboard</a>
+</div>
+
+<script>
+(function () {
+  const log = document.getElementById('log');
+  const doneBox = document.getElementById('done-box');
+
+  const es = new EventSource('/api/vms/stream');
+
+  es.onmessage = function (e) {
+    if (e.data === '[DONE]') {
+      es.close();
+      doneBox.style.display = 'block';
+      return;
+    }
+    const p = document.createElement('p');
+    p.className = 'log-entry' + (e.data.startsWith('ERROR') ? ' log-error' : '');
+    p.textContent = e.data;
+    log.appendChild(p);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  es.onerror = function () {
+    es.close();
+    doneBox.style.display = 'block';
+  };
+})();
+</script>
+{% endblock %}

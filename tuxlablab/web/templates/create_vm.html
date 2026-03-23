@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Create VM – tuxlablab{% endblock %}
+
+{% block content %}
+<h1>Create Virtual Machine</h1>
+
+<form method="post" action="/vms/create" class="vm-form">
+  <div class="form-group">
+    <label for="hostname">Hostname</label>
+    <input type="text" id="hostname" name="hostname" required
+           placeholder="e.g. test123"
+           class="form-control"/>
+    <small class="help-text">Short hostname – the lab domain will be appended automatically.</small>
+  </div>
+
+  <div class="form-row">
+    <div class="form-group half">
+      <label for="cpus">vCPUs</label>
+      <input type="number" id="cpus" name="cpus" value="2" min="1" max="64" class="form-control"/>
+    </div>
+    <div class="form-group half">
+      <label for="ram_mb">RAM (MB)</label>
+      <input type="number" id="ram_mb" name="ram_mb" value="2048" min="256" step="256" class="form-control"/>
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label for="dist">Distribution</label>
+    <select id="dist" name="distribution" class="form-control">
+      <option value="">-- default --</option>
+      {% for d in distributions %}
+      <option value="{{ d.name }}">{{ d.name }} – {{ d.display_name }}</option>
+      {% endfor %}
+    </select>
+    <small class="help-text">
+      Leave blank to use the default distribution.
+      {% if not distributions %}
+      No distributions defined yet – create <code>.dist</code> files in the distributions directory.
+      {% endif %}
+    </small>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Create VM</button>
+    <a href="/" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+{% endblock %}
