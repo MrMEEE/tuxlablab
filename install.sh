@@ -12,6 +12,8 @@ VENV_DIR="$DB_DIR/venv"
 PYTHON_BIN="$VENV_DIR/bin/python"
 PIP_BIN="$VENV_DIR/bin/pip"
 CLI_BIN="$VENV_DIR/bin/tuxlablab"
+SERVICE_FILE="$HOME/.config/systemd/user/tuxlablab.service"
+SERVICE_UPDATED=0
 
 printf "Using database: %s\n" "$TUXLABLAB_DB"
 printf "Using virtualenv: %s\n" "$VENV_DIR"
@@ -34,8 +36,20 @@ fi
 "$PYTHON_BIN" -m pip install --upgrade pip
 "$PIP_BIN" install --upgrade -e "$SCRIPT_DIR"
 
+if [[ -f "$SERVICE_FILE" ]]; then
+  printf "Detected existing user service tuxlablab.service; refreshing unit configuration...\n"
+  if "$CLI_BIN" service-install \
+    --db-path "$TUXLABLAB_DB" \
+    --python "$PYTHON_BIN" \
+    --no-enable-linger; then
+    SERVICE_UPDATED=1
+  else
+    printf "Warning: failed to refresh existing tuxlablab.service\n" >&2
+  fi
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
-  if [[ -f "$HOME/.config/systemd/user/tuxlablab.service" ]]; then
+  if [[ -f "$SERVICE_FILE" ]]; then
     printf "Detected existing user service tuxlablab.service; reloading and restarting it...\n"
     if systemctl --user daemon-reload >/dev/null 2>&1; then
       if systemctl --user is-active --quiet tuxlablab.service; then
@@ -75,15 +89,19 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   printf "  export PATH=\"%s:\$PATH\"\n" "$BIN_DIR"
 fi
 
-printf "\nInstall and start user systemd service now? [y/N]: "
-read -r reply
-if [[ "$reply" =~ ^[Yy]$ ]]; then
-  "$CLI_BIN" service-install \
-    --db-path "$TUXLABLAB_DB" \
-    --python "$PYTHON_BIN"
-  printf "Service installed with venv Python: %s\n" "$PYTHON_BIN"
+if [[ "$SERVICE_UPDATED" -eq 1 ]]; then
+  printf "\nExisting user service was refreshed automatically; skipping install prompt.\n"
 else
-  printf "Skipped service installation.\n"
+  printf "\nInstall and start user systemd service now? [y/N]: "
+  read -r reply
+  if [[ "$reply" =~ ^[Yy]$ ]]; then
+    "$CLI_BIN" service-install \
+      --db-path "$TUXLABLAB_DB" \
+      --python "$PYTHON_BIN"
+    printf "Service installed with venv Python: %s\n" "$PYTHON_BIN"
+  else
+    printf "Skipped service installation.\n"
+  fi
 fi
 
 printf "\nDone.\n"
