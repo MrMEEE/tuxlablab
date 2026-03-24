@@ -9,6 +9,8 @@ import tuxlablab.db as _db
 
 _DEFAULT_DC_HOME = str(Path.home() / "ansible" / "localdc")
 _DEFAULT_SSH_KEY = str(Path.home() / ".ssh" / "id_rsa.pub")
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_INSTALL_ROOT = _PACKAGE_DIR.parent
 
 _DEFAULTS = {
     "labdomain": "mylab.lan",
@@ -95,7 +97,7 @@ class Config:
 
     @property
     def playbooks_dir(self) -> Path:
-        return self.dc_home / "playbooks"
+        return _INSTALL_ROOT / "playbooks"
 
     @property
     def inventories_dir(self) -> Path:
@@ -107,7 +109,6 @@ class Config:
             self.images_dir,
             self.vms_dir,
             self.distributions_dir,
-            self.playbooks_dir,
             self.inventories_dir,
         ):
             d.mkdir(parents=True, exist_ok=True)

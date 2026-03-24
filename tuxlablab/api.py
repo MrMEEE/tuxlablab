@@ -6,10 +6,12 @@ import threading
 import time
 from collections.abc import Generator
 from pathlib import Path
+import ssl
+import urllib.request
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -17,6 +19,7 @@ from pydantic import BaseModel
 import tuxlablab.db as _db
 from tuxlablab.config import config
 from tuxlablab.core import VMManager, VMManagerError
+from tuxlablab.distribution_presets import get_preset, presets_for_web
 from tuxlablab.rh_download import (
     RHDownloadError,
     get_rhel_kvm_download_info,
@@ -44,6 +47,38 @@ app.mount(
 templates = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
 
 _manager = VMManager()
+_download_status_lock = threading.Lock()
+_download_status: dict[str, dict[str, str | int | None]] = {}
+
+
+def _set_download_status(
+    name: str,
+    *,
+    state: str,
+    downloaded: int = 0,
+    total: int | None = None,
+    message: str = "",
+) -> None:
+    with _download_status_lock:
+        _download_status[name] = {
+            "state": state,
+            "downloaded": downloaded,
+            "total": total,
+            "message": message,
+        }
+
+
+def _get_download_status(name: str) -> dict[str, str | int | None]:
+    with _download_status_lock:
+        row = _download_status.get(name)
+        if row is None:
+            return {
+                "state": "idle",
+                "downloaded": 0,
+                "total": None,
+                "message": "",
+            }
+        return dict(row)
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -431,7 +466,7 @@ def web_distributions(request: Request):
     """Distributions management page."""
     dists = _db.list_distributions()
     images_dir = config.images_dir
-    rhn_configured = bool(_db.get_setting("rhn_offline_token"))
+    available_playbooks = _manager.list_playbooks()
     for d in dists:
         d["image_present"] = (images_dir / d["image_file"]).exists()
         d["is_rhel"] = d["image_file"].startswith("rhel-")
@@ -441,9 +476,34 @@ def web_distributions(request: Request):
         context={
             "request": request,
             "distributions": dists,
-            "rhn_configured": rhn_configured,
+            "preset_options": presets_for_web(),
+            "available_playbooks": available_playbooks,
         },
     )
+
+
+@app.post("/distributions/add-preset", response_class=HTMLResponse, tags=["web"])
+def web_distribution_add_preset(
+    request: Request,
+    family: str = Form(...),
+    version: str = Form(...),
+    playbooks: list[str] = Form([]),
+):
+    try:
+        preset = get_preset(family, version)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    selected_playbooks = " ".join([p.strip() for p in playbooks if p.strip()])
+
+    _db.upsert_distribution(
+        name=preset["name"],
+        display_name=preset["display_name"],
+        image_file=preset["image_file"],
+        playbooks=selected_playbooks or preset["playbooks"],
+        download_url=preset["download_url"],
+    )
+    return RedirectResponse(url="/distributions", status_code=303)
 
 
 @app.post("/distributions/add", response_class=HTMLResponse, tags=["web"])
@@ -452,12 +512,13 @@ def web_distribution_add(
     name: str = Form(...),
     display_name: str = Form(...),
     image_file: str = Form(...),
-    playbooks: str = Form(""),
+    playbooks: list[str] = Form([]),
     download_url: str = Form(""),
 ):
+    selected_playbooks = " ".join([p.strip() for p in playbooks if p.strip()])
     _db.upsert_distribution(
         name=name, display_name=display_name, image_file=image_file,
-        playbooks=playbooks, download_url=download_url,
+        playbooks=selected_playbooks, download_url=download_url,
     )
     return RedirectResponse(url="/distributions", status_code=303)
 
@@ -478,8 +539,8 @@ def web_distribution_update_url(request: Request, name: str, download_url: str =
     return RedirectResponse(url="/distributions", status_code=303)
 
 
-@app.post("/distributions/{name}/download", response_class=HTMLResponse, tags=["web"])
-def web_distribution_download(request: Request, name: str, background_tasks: BackgroundTasks):
+@app.post("/distributions/{name}/download", response_class=JSONResponse, tags=["web"])
+def web_distribution_download(request: Request, name: str):
     """Start a background download of a distribution image."""
     dist = _db.get_distribution(name)
     if dist is None:
@@ -492,7 +553,7 @@ def web_distribution_download(request: Request, name: str, background_tasks: Bac
 
     # Always prefer a manually configured download_url (any distro, no cert needed).
     url = dist.get("download_url", "").strip()
-    cert_args: list[str] = []
+    cert_info: dict[str, str] | None = None
 
     if not url and image_file.startswith("rhel-"):
         # No stored URL: construct the Red Hat CDN URL and resolve entitlement certs.
@@ -507,11 +568,7 @@ def web_distribution_download(request: Request, name: str, background_tasks: Bac
         except RHDownloadError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         url = info["url"]
-        cert_args = [
-            "--cacert", info["ca_cert"],
-            "--cert", info["cert"],
-            "--key", info["key"],
-        ]
+        cert_info = info
 
     if not url:
         raise HTTPException(
@@ -519,17 +576,112 @@ def web_distribution_download(request: Request, name: str, background_tasks: Bac
             detail="No download URL configured for this distribution.",
         )
 
-    def _download():
-        import subprocess
-        subprocess.run(
-            ["curl", "-L", "--output", str(dest), "--continue-at", "-"]
-            + cert_args
-            + [url],
-            check=False,
+    existing = _get_download_status(name)
+    if existing["state"] == "running":
+        return JSONResponse(
+            {"status": "already-running", "name": name},
+            status_code=409,
         )
 
-    background_tasks.add_task(_download)
-    return RedirectResponse(url="/distributions", status_code=303)
+    def _download():
+        part_path = dest.with_suffix(dest.suffix + ".part")
+        resumed = part_path.stat().st_size if part_path.exists() else 0
+        headers: dict[str, str] = {}
+        if resumed > 0:
+            headers["Range"] = f"bytes={resumed}-"
+
+        context: ssl.SSLContext | None = None
+        if cert_info is not None:
+            context = ssl.create_default_context(cafile=cert_info["ca_cert"])
+            context.load_cert_chain(
+                certfile=cert_info["cert"],
+                keyfile=cert_info["key"],
+            )
+
+        _set_download_status(
+            name,
+            state="running",
+            downloaded=resumed,
+            total=None,
+            message="Downloading...",
+        )
+
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, context=context, timeout=30) as resp:
+                total: int | None = None
+                content_range = resp.headers.get("Content-Range")
+                if content_range and "/" in content_range:
+                    total_part = content_range.rsplit("/", 1)[-1].strip()
+                    if total_part.isdigit():
+                        total = int(total_part)
+                elif resp.headers.get("Content-Length"):
+                    total = int(resp.headers["Content-Length"]) + resumed
+
+                downloaded = resumed
+                _set_download_status(
+                    name,
+                    state="running",
+                    downloaded=downloaded,
+                    total=total,
+                    message="Downloading...",
+                )
+
+                mode = "ab" if resumed > 0 else "wb"
+                with part_path.open(mode) as file_obj:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        file_obj.write(chunk)
+                        downloaded += len(chunk)
+                        _set_download_status(
+                            name,
+                            state="running",
+                            downloaded=downloaded,
+                            total=total,
+                            message="Downloading...",
+                        )
+
+            part_path.replace(dest)
+            _set_download_status(
+                name,
+                state="completed",
+                downloaded=dest.stat().st_size if dest.exists() else 0,
+                total=dest.stat().st_size if dest.exists() else None,
+                message="Download complete",
+            )
+        except Exception as exc:
+            _set_download_status(
+                name,
+                state="error",
+                downloaded=0,
+                total=None,
+                message=str(exc),
+            )
+
+    threading.Thread(target=_download, daemon=True).start()
+    return JSONResponse({"status": "started", "name": name})
+
+
+@app.get("/api/distributions/{name}/download-status", tags=["distributions"])
+def api_distribution_download_status(name: str):
+    """Get current background download status for one distribution."""
+    dist = _db.get_distribution(name)
+    if dist is None:
+        raise HTTPException(status_code=404, detail=f"Distribution '{name}' not found.")
+
+    status = _get_download_status(name)
+    image_path = config.images_dir / dist["image_file"]
+    if status["state"] == "idle" and image_path.exists():
+        size = image_path.stat().st_size
+        return {
+            "state": "completed",
+            "downloaded": size,
+            "total": size,
+            "message": "Image already present",
+        }
+    return status
 
 
 @app.post("/distributions/{name}/delete", response_class=HTMLResponse, tags=["web"])

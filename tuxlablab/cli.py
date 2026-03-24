@@ -6,14 +6,23 @@ import os
 from pathlib import Path
 import re
 import shlex
+import ssl
 import subprocess
 import sys
+import urllib.request
 
 import click
 
 import tuxlablab.db as _db
 from tuxlablab.config import config
 from tuxlablab.core import VMManager, VMManagerError
+from tuxlablab.distribution_presets import families as preset_families
+from tuxlablab.distribution_presets import get_preset, versions as preset_versions
+from tuxlablab.rh_download import (
+    RHDownloadError,
+    get_rhel_kvm_download_info,
+    rhel_version_from_filename,
+)
 
 pass_manager = click.make_pass_decorator(VMManager, ensure=True)
 
@@ -91,6 +100,87 @@ def _build_user_service_text(
     if db_path:
         lines.insert(11, f"Environment=TUXLABLAB_DB={db_path}")
     return "\n".join(lines) + "\n"
+
+
+def _resolve_download_source(dist: dict) -> tuple[str, dict[str, str] | None]:
+    image_file = dist["image_file"]
+    url = (dist.get("download_url") or "").strip()
+    cert_info: dict[str, str] | None = None
+
+    if not url and image_file.startswith("rhel-"):
+        version = rhel_version_from_filename(image_file)
+        cert_info = get_rhel_kvm_download_info(
+            rhel_version=version,
+            ca_cert=_db.get_setting("rhn_ca_cert") or "",
+            cert=_db.get_setting("rhn_entitlement_cert") or "",
+            key=_db.get_setting("rhn_entitlement_key") or "",
+        )
+        url = cert_info["url"]
+
+    if not url:
+        raise click.ClickException(
+            "No download URL configured for this distribution and no RHEL certificate source resolved."
+        )
+    return url, cert_info
+
+
+def _download_with_progress(
+    url: str,
+    destination: Path,
+    cert_info: dict[str, str] | None = None,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    part_path = destination.with_suffix(destination.suffix + ".part")
+    resumed = part_path.stat().st_size if part_path.exists() else 0
+
+    headers: dict[str, str] = {}
+    if resumed > 0:
+        headers["Range"] = f"bytes={resumed}-"
+
+    context: ssl.SSLContext | None = None
+    if cert_info is not None:
+        context = ssl.create_default_context(cafile=cert_info["ca_cert"])
+        context.load_cert_chain(
+            certfile=cert_info["cert"],
+            keyfile=cert_info["key"],
+        )
+
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, context=context, timeout=30) as response:
+        total: int | None = None
+        content_range = response.headers.get("Content-Range")
+        if content_range and "/" in content_range:
+            total_part = content_range.rsplit("/", 1)[-1].strip()
+            if total_part.isdigit():
+                total = int(total_part)
+        elif response.headers.get("Content-Length"):
+            total = int(response.headers["Content-Length"]) + resumed
+
+        mode = "ab" if resumed > 0 else "wb"
+        with part_path.open(mode) as handle:
+            if total is not None:
+                with click.progressbar(length=total, label="Downloading", show_eta=True) as bar:
+                    if resumed:
+                        bar.update(resumed)
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        bar.update(len(chunk))
+            else:
+                downloaded = resumed
+                click.echo("Downloading (size unknown)...")
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    click.echo(f"  {downloaded // (1024 * 1024)} MB", nl=False)
+                    click.echo("\r", nl=False)
+
+    part_path.replace(destination)
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +464,45 @@ def cmd_dist_add(name: str, display_name: str, image_file: str, playbooks: str) 
     _ok(f"Distribution '{name}' saved.")
 
 
+@main.command(name="dist-add-preset")
+@click.option(
+    "--distribution",
+    "distribution",
+    required=True,
+    type=click.Choice(preset_families(), case_sensitive=False),
+    help="Distribution family",
+)
+@click.option("--version", required=True, help="Version for selected distribution")
+def cmd_dist_add_preset(distribution: str, version: str) -> None:
+    """Add a predefined distribution preset (same catalog as web UI dropdowns)."""
+    family = next((f for f in preset_families() if f.lower() == distribution.lower()), distribution)
+    allowed_versions = preset_versions(family)
+    if version not in allowed_versions:
+        _err(
+            f"Unsupported version '{version}' for {family}. "
+            f"Available: {', '.join(allowed_versions)}"
+        )
+        sys.exit(1)
+
+    try:
+        preset = get_preset(family, version)
+    except ValueError as exc:
+        _err(str(exc))
+        sys.exit(1)
+
+    _db.upsert_distribution(
+        name=preset["name"],
+        display_name=preset["display_name"],
+        image_file=preset["image_file"],
+        playbooks=preset["playbooks"],
+        download_url=preset["download_url"],
+    )
+    _ok(
+        f"Distribution preset added: {family} {version} "
+        f"({preset['name']})"
+    )
+
+
 # ---------------------------------------------------------------------------
 # dist-remove
 # ---------------------------------------------------------------------------
@@ -409,6 +538,43 @@ def cmd_dist_import(directory: str) -> None:
         _ok(f"Imported {n} distribution(s) from {directory}")
     else:
         _warn(f"No .dist files found in {directory}")
+
+
+# ---------------------------------------------------------------------------
+# dist-download
+# ---------------------------------------------------------------------------
+
+
+@main.command(name="dist-download")
+@click.argument("name")
+def cmd_dist_download(name: str) -> None:
+    """Download a distribution image to the images directory."""
+    dist = _db.get_distribution(name)
+    if dist is None:
+        _err(f"Distribution '{name}' not found.")
+        sys.exit(1)
+
+    destination = config.images_dir / dist["image_file"]
+    if destination.exists():
+        _ok(f"Image already present: {destination}")
+        return
+
+    try:
+        url, cert_info = _resolve_download_source(dist)
+    except (click.ClickException, RHDownloadError) as exc:
+        _err(str(exc))
+        sys.exit(1)
+
+    click.echo(f"Source: {url}")
+    click.echo(f"Destination: {destination}")
+
+    try:
+        _download_with_progress(url, destination, cert_info)
+    except Exception as exc:
+        _err(f"Download failed: {exc}")
+        sys.exit(1)
+
+    _ok(f"Downloaded image for distribution '{name}'.")
 
 
 # ---------------------------------------------------------------------------

@@ -63,13 +63,15 @@
       <tr>
         <td><code>{{ s.key }}</code></td>
         <td>
-          <form method="post" action="/settings/{{ s.key }}" class="inline-settings-form">
+          <div class="inline-settings-form">
             <input type="{% if 'password' in s.key or 'token' in s.key %}password{% else %}text{% endif %}"
                    name="value"
                    value="{{ s.value }}"
-                   class="form-control form-control-inline"/>
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
-          </form>
+                   data-setting-key="{{ s.key }}"
+                   data-original-value="{{ s.value }}"
+                   class="form-control form-control-inline js-setting-input"/>
+            <span class="setting-save-status" aria-live="polite"></span>
+          </div>
         </td>
       </tr>
       {% endfor %}
@@ -79,4 +81,68 @@
   <p class="muted">No settings found.</p>
   {% endif %}
 </div>
+
+<script>
+  (() => {
+    const inputs = document.querySelectorAll('.js-setting-input');
+
+    function setStatus(input, message, kind = '') {
+      const status = input.parentElement.querySelector('.setting-save-status');
+      if (!status) {
+        return;
+      }
+      status.textContent = message;
+      status.className = `setting-save-status ${kind}`.trim();
+    }
+
+    async function saveSetting(input) {
+      const key = input.dataset.settingKey;
+      const value = input.value;
+      const originalValue = input.dataset.originalValue ?? '';
+
+      if (value === originalValue) {
+        setStatus(input, '');
+        return;
+      }
+
+      input.disabled = true;
+      setStatus(input, 'Saving…', 'saving');
+
+      try {
+        const response = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: JSON.stringify({ value }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.detail || 'Failed to save setting');
+        }
+
+        input.dataset.originalValue = value;
+        setStatus(input, 'Saved', 'saved');
+        window.setTimeout(() => {
+          if (input.dataset.originalValue === input.value) {
+            setStatus(input, '');
+          }
+        }, 1500);
+      } catch (error) {
+        input.value = originalValue;
+        setStatus(input, error.message || 'Save failed', 'error');
+      } finally {
+        input.disabled = false;
+      }
+    }
+
+    inputs.forEach((input) => {
+      input.addEventListener('change', () => {
+        saveSetting(input);
+      });
+    });
+  })();
+</script>
 {% endblock %}

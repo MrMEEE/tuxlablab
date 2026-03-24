@@ -216,6 +216,34 @@ body {
 
 .inline-settings-form { display: flex; gap: .5rem; align-items: center; }
 .form-control-inline { width: auto; flex: 1; min-width: 0; }
+.setting-save-status {
+  min-width: 4rem;
+  font-size: .8rem;
+  color: var(--muted);
+}
+.setting-save-status.saving { color: var(--info); }
+.setting-save-status.saved { color: var(--success); }
+.setting-save-status.error { color: var(--danger); }
+
+.download-progress-wrap { max-width: 16rem; }
+.download-progress-track {
+  width: 100%;
+  height: .5rem;
+  background: #e5e7eb;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+.download-progress-bar {
+  height: 100%;
+  background: var(--brand);
+  transition: width .2s ease;
+}
+.download-progress-text {
+  display: block;
+  margin-top: .25rem;
+  color: var(--muted);
+  font-size: .75rem;
+}
 
 /* ── Footer ── */
 footer {

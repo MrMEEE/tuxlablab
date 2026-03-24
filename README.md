@@ -90,6 +90,12 @@ tuxlablab remove test123
 # List available distributions
 tuxlablab distributions
 
+# Download a distribution image
+tuxlablab dist-download centos9
+
+# Add a predefined distribution preset (same as web dropdowns)
+tuxlablab dist-add-preset --distribution RHEL --version 9.7
+
 # Start the web/API server
 tuxlablab server
 # or

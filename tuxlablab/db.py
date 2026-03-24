@@ -74,22 +74,6 @@ _REQUIRED_SETTING_KEYS = {
     "port",
 }
 
-# (name, display_name, image_file, playbooks, download_url)
-# Sourced from MrMEEE/laptop-lab and mglantz/laptop-lab distribution templates.
-# These are seeded on first init only (INSERT OR IGNORE – user edits are preserved).
-_DISTRIBUTION_DEFAULTS: list[tuple[str, str, str, str, str]] = [
-    ("aap",     "Ansible Automation Platform on RHEL 9.7", "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml aap.yml",    ""),
-    ("apache",  "Apache Webserver on RHEL 9.7",            "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml apache.yml",  ""),
-    ("centos9", "CentOS Stream 9",                         "CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2", "",            "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"),
-    ("oel92",   "Oracle Enterprise Linux 9.2",             "OL9U2_x86_64-kvm-b197.qcow",                   "",              ""),
-    ("pcidss",  "RHEL 9.7 / PCIDSS",                      "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml pcidss.yml",  ""),
-    ("quarkus", "Quarkus on RHEL 9.7",                    "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml quarkus.yml", ""),
-    ("rhel97",  "Red Hat Enterprise Linux 9.7",            "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml",             ""),
-    ("rhel100", "Red Hat Enterprise Linux 10.0",           "rhel-10.0-x86_64-kvm.qcow2",                   "rh-register.yml",             ""),
-    ("rocky9",  "Rocky Linux 9",                          "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2", "",              "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"),
-    ("sles15",  "SUSE Enterprise Linux 15",               "sles15-raw.qcow2",                              "",              ""),
-]
-
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9-]{1,63}(?<!-))(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
 )
@@ -135,7 +119,7 @@ def _db_path() -> Path:
 
 
 def init_db(path: Path | None = None) -> None:
-    """Create tables and seed default settings and distributions (idempotent)."""
+    """Create tables and seed default settings (idempotent)."""
     db = path or _db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
@@ -163,12 +147,6 @@ def init_db(path: Path | None = None) -> None:
         conn.executemany(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             list(_SETTINGS_DEFAULTS.items()),
-        )
-        # Seed built-in distributions without overriding user-created entries.
-        conn.executemany(
-            "INSERT OR IGNORE INTO distributions (name, display_name, image_file, playbooks, download_url)"
-            " VALUES (?, ?, ?, ?, ?)",
-            _DISTRIBUTION_DEFAULTS,
         )
         conn.commit()
 

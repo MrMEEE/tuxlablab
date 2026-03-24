@@ -10,19 +10,8 @@
   Add a distribution by filling in the form below, then place the
   corresponding <code>.qcow2</code> image in the images directory,
   or use the download button if a URL is configured.
-  RHEL images are downloaded using your Red Hat Network credentials.
+  RHEL images can use either a direct URL or Red Hat entitlement certificates.
 </p>
-
-{% if not rhn_configured %}
-<div class="alert alert-warn" style="margin-bottom:1.5rem">
-  <strong>No Red Hat offline token configured.</strong>
-  RHEL image downloads work in two ways: either set an <em>rhn_offline_token</em> on the
-  <a href="/settings">Settings</a> page, or paste a direct download URL into the
-  <em>Download URL</em> field for each RHEL distribution below.
-  To get a direct URL: open the Red Hat Downloads page, right-click the
-  <em>KVM Guest Image</em> download button, and copy the link.
-</div>
-{% endif %}
 
 {% if distributions %}
 <table class="vm-table">
@@ -33,16 +22,22 @@
   </thead>
   <tbody>
     {% for d in distributions %}
-    <tr>
+    <tr data-dist-name="{{ d.name }}">
       <td><strong>{{ d.name }}</strong></td>
       <td>{{ d.display_name }}</td>
       <td><code>{{ d.image_file }}</code></td>
       <td>
         {% if d.image_present %}
-          <span class="badge badge-ok">Present</span>
+          <span class="badge badge-ok image-state">Present</span>
         {% else %}
-          <span class="badge badge-warn">Missing</span>
+          <span class="badge badge-warn image-state">Missing</span>
         {% endif %}
+        <div class="download-progress-wrap" id="progress-wrap-{{ d.name }}" style="display:none; margin-top:.45rem;">
+          <div class="download-progress-track">
+            <div class="download-progress-bar" id="progress-bar-{{ d.name }}" style="width:0%"></div>
+          </div>
+          <small class="download-progress-text" id="progress-text-{{ d.name }}">0%</small>
+        </div>
       </td>
       <td>
         <form method="post" action="/distributions/{{ d.name }}/update-url"
@@ -62,18 +57,11 @@
       </td>
       <td style="white-space:nowrap">
         {% if not d.image_present %}
-          {% set can_download = d.download_url or rhn_configured %}
-          <form method="post" action="/distributions/{{ d.name }}/download"
-                class="inline-form" style="display:inline">
-            <button class="btn btn-primary btn-sm" type="submit"
-                    {% if not can_download %}disabled
-                      title="Set a Download URL or configure an RHN offline token first"
-                    {% elif d.is_rhel and not d.download_url %}
-                      title="Download via Red Hat API (requires offline token)"
-                    {% else %}
-                      title="Download image in the background"
-                    {% endif %}>
-              Download{% if d.is_rhel and not d.download_url %} (RHN){% endif %}
+          <form class="inline-form download-form" data-name="{{ d.name }}" style="display:inline">
+            <button class="btn btn-primary btn-sm download-btn" type="button"
+                    data-name="{{ d.name }}"
+                    title="Download image in the background without reloading this page">
+              Download
             </button>
           </form>
         {% endif %}
@@ -93,44 +81,205 @@
 
 <div class="card" style="margin-top:2rem">
   <h2>Add Distribution</h2>
-  <form method="post" action="/distributions/add" class="vm-form">
+  <form method="post" action="/distributions/add-preset" class="vm-form">
     <div class="form-row">
       <div class="form-group half">
-        <label for="name">Name <small>(identifier)</small></label>
-        <input type="text" id="name" name="name" required
-               placeholder="e.g. centos9" class="form-control"/>
+        <label for="family">Distribution</label>
+        <select id="family" name="family" required class="form-control">
+          {% for row in preset_options %}
+          <option value="{{ row.family }}">{{ row.family }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div class="form-group half">
-        <label for="display_name">Display Name</label>
-        <input type="text" id="display_name" name="display_name" required
-               placeholder="e.g. CentOS Stream 9" class="form-control"/>
+        <label for="version">Version</label>
+        <select id="version" name="version" required class="form-control"></select>
       </div>
     </div>
     <div class="form-group">
-      <label for="image_file">Image File</label>
-      <input type="text" id="image_file" name="image_file" required
-             placeholder="e.g. CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
-             class="form-control"/>
-      <small class="help-text">Filename of the qcow2 image in the images directory.</small>
+      <label for="preset_playbooks">Playbooks <small>(optional, one or many)</small></label>
+      <select id="preset_playbooks" name="playbooks" multiple class="form-control" style="min-height:8rem">
+        {% for playbook in available_playbooks %}
+        <option value="{{ playbook }}">{{ playbook }}</option>
+        {% endfor %}
+      </select>
+      <small class="help-text">Hold Ctrl/Cmd to select multiple playbooks.</small>
     </div>
-    <div class="form-group">
-      <label for="download_url">Download URL <small>(optional)</small></label>
-      <input type="url" id="download_url" name="download_url"
-             placeholder="e.g. https://cloud.centos.org/…/image.qcow2"
-             class="form-control"/>
-      <small class="help-text">Direct URL to download the image when it is missing.</small>
-    </div>
-    <div class="form-group">
-      <label for="playbooks">Playbooks <small>(optional)</small></label>
-      <input type="text" id="playbooks" name="playbooks"
-             placeholder="e.g. rh-register.yml   (space-separated)"
-             class="form-control"/>
-      <small class="help-text">Space-separated list of Ansible playbook filenames to run after creation.</small>
-    </div>
+    <small class="help-text">Select a distribution family and version, then click Add Distribution.</small>
     <div class="form-actions">
       <button type="submit" class="btn btn-primary">Add Distribution</button>
       <a href="/" class="btn btn-secondary">Cancel</a>
     </div>
   </form>
 </div>
+
+<div class="card" style="margin-top:1rem">
+  <h2>Add Custom Distribution</h2>
+  <form method="post" action="/distributions/add" class="vm-form">
+    <div class="form-row">
+      <div class="form-group half">
+        <label for="custom_name">Name <small>(identifier)</small></label>
+        <input type="text" id="custom_name" name="name" required
+               placeholder="e.g. mylinux1" class="form-control"/>
+      </div>
+      <div class="form-group half">
+        <label for="custom_display_name">Display Name</label>
+        <input type="text" id="custom_display_name" name="display_name" required
+               placeholder="e.g. My Linux 1" class="form-control"/>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="custom_image_file">Image File</label>
+      <input type="text" id="custom_image_file" name="image_file" required
+             placeholder="e.g. mylinux1.qcow2" class="form-control"/>
+      <small class="help-text">Filename of the qcow2 image in the images directory.</small>
+    </div>
+    <div class="form-group">
+      <label for="custom_playbooks">Playbooks <small>(optional, one or many)</small></label>
+      <select id="custom_playbooks" name="playbooks" multiple class="form-control" style="min-height:8rem">
+        {% for playbook in available_playbooks %}
+        <option value="{{ playbook }}">{{ playbook }}</option>
+        {% endfor %}
+      </select>
+      <small class="help-text">Hold Ctrl/Cmd to select multiple playbooks.</small>
+    </div>
+    <div class="form-group">
+      <label for="custom_download_url">Download URL <small>(optional)</small></label>
+      <input type="url" id="custom_download_url" name="download_url"
+             placeholder="e.g. https://example.com/path/image.qcow2"
+             class="form-control"/>
+      <small class="help-text">Optional direct URL to download the image when missing.</small>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Add Custom Distribution</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(() => {
+  const presetOptions = {{ preset_options | tojson }};
+  const pollTimers = new Map();
+
+  function refreshVersions() {
+    const familyEl = document.getElementById('family');
+    const versionEl = document.getElementById('version');
+    if (!familyEl || !versionEl) return;
+
+    const selectedFamily = familyEl.value;
+    const row = presetOptions.find((item) => item.family === selectedFamily);
+    const versions = row ? row.versions : [];
+    versionEl.innerHTML = '';
+    versions.forEach((version) => {
+      const option = document.createElement('option');
+      option.value = version;
+      option.textContent = version;
+      versionEl.appendChild(option);
+    });
+  }
+
+  function formatBytes(value) {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num) || num <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let idx = 0;
+    let size = num;
+    while (size >= 1024 && idx < units.length - 1) {
+      size /= 1024;
+      idx += 1;
+    }
+    return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+  }
+
+  function setProgress(name, status) {
+    const wrap = document.getElementById(`progress-wrap-${name}`);
+    const bar = document.getElementById(`progress-bar-${name}`);
+    const text = document.getElementById(`progress-text-${name}`);
+    if (!wrap || !bar || !text) return;
+
+    const downloaded = Number(status.downloaded || 0);
+    const total = status.total === null || status.total === undefined ? null : Number(status.total);
+    let pct = 0;
+    if (total && total > 0) {
+      pct = Math.max(0, Math.min(100, (downloaded / total) * 100));
+    }
+
+    wrap.style.display = 'block';
+    bar.style.width = `${pct}%`;
+
+    if (status.state === 'running') {
+      text.textContent = total && total > 0
+        ? `${pct.toFixed(1)}% (${formatBytes(downloaded)} / ${formatBytes(total)})`
+        : `${formatBytes(downloaded)} downloaded`;
+    } else if (status.state === 'completed') {
+      bar.style.width = '100%';
+      text.textContent = 'Completed';
+      const row = document.querySelector(`tr[data-dist-name="${name}"]`);
+      const badge = row ? row.querySelector('.image-state') : null;
+      if (badge) {
+        badge.classList.remove('badge-warn');
+        badge.classList.add('badge-ok');
+        badge.textContent = 'Present';
+      }
+      const btn = document.querySelector(`button.download-btn[data-name="${name}"]`);
+      if (btn) btn.setAttribute('disabled', 'disabled');
+    } else if (status.state === 'error') {
+      text.textContent = `Error: ${status.message || 'download failed'}`;
+    } else {
+      text.textContent = status.message || 'Idle';
+    }
+  }
+
+  async function pollStatus(name) {
+    try {
+      const res = await fetch(`/api/distributions/${encodeURIComponent(name)}/download-status`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      const data = await res.json();
+      setProgress(name, data);
+      if (data.state === 'running') {
+        const id = setTimeout(() => pollStatus(name), 1000);
+        pollTimers.set(name, id);
+      }
+    } catch (err) {
+      setProgress(name, { state: 'error', message: String(err || 'status request failed') });
+    }
+  }
+
+  async function startDownload(name, button) {
+    button.setAttribute('disabled', 'disabled');
+    try {
+      const res = await fetch(`/distributions/${encodeURIComponent(name)}/download`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok && data.status !== 'already-running') {
+        throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+      }
+      if (pollTimers.has(name)) clearTimeout(pollTimers.get(name));
+      pollStatus(name);
+    } catch (err) {
+      button.removeAttribute('disabled');
+      setProgress(name, { state: 'error', message: String(err || 'download failed') });
+    }
+  }
+
+  document.querySelectorAll('button.download-btn[data-name]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const name = button.getAttribute('data-name');
+      if (!name) return;
+      startDownload(name, button);
+    });
+    const name = button.getAttribute('data-name');
+    if (name) pollStatus(name);
+  });
+
+  const familyEl = document.getElementById('family');
+  if (familyEl) {
+    familyEl.addEventListener('change', refreshVersions);
+    refreshVersions();
+  }
+})();
+</script>
 {% endblock %}
