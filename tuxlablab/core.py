@@ -122,7 +122,7 @@ def _vm_xml(
       <image compression='off'/>
     </graphics>
     <video>
-      <model type='qxl' ram='65536' vram='65536' vgamem='16384' heads='1' primary='yes'/>
+            <model type='virtio' heads='1' primary='yes'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x0'/>
     </video>
     <memballoon model='virtio'>
