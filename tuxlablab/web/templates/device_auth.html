@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Authorize with Red Hat – tuxlablab{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Authorize with Red Hat</h1>
+</div>
+<p class="muted" style="margin-bottom:1.5rem">
+  Follow the steps below to grant tuxlablab access to your Red Hat account.
+  No password is ever sent to this server.
+</p>
+
+<div class="card" style="max-width:640px; margin-bottom:1.5rem">
+  <h2 style="margin-bottom:1rem">Step 1 – Open the authorization page</h2>
+  <p style="margin-bottom:1rem">
+    Open the link below in your browser (or click the button).
+    Log in with your Red Hat account and approve the access request.
+  </p>
+  <a href="{{ verification_uri_complete }}" target="_blank" rel="noopener noreferrer"
+     class="btn btn-primary" style="margin-bottom:.75rem">
+    Open Red Hat Authorization Page
+  </a>
+  <p style="font-size:.85rem; color:#666; margin-top:.5rem; word-break:break-all">
+    <code>{{ verification_uri }}</code>
+  </p>
+</div>
+
+<div class="card" style="max-width:640px; margin-bottom:1.5rem">
+  <h2 style="margin-bottom:1rem">Step 2 – Enter the code when prompted</h2>
+  <p style="margin-bottom:.75rem">
+    If not pre-filled, enter this code on the Red Hat authorization page:
+  </p>
+  <div style="font-size:2.5rem; font-weight:700; letter-spacing:.35rem; font-family:monospace;
+              background:#f4f4f4; padding:.75rem 1.25rem; border-radius:6px; display:inline-block;
+              margin-bottom:.5rem">
+    {{ user_code }}
+  </div>
+  <p id="expires-text" style="font-size:.85rem; color:#888; margin-top:.5rem">
+    This code expires in <span id="countdown">{{ expires_in }}</span> seconds.
+  </p>
+</div>
+
+<div class="card" style="max-width:640px">
+  <h2 style="margin-bottom:.75rem">Step 3 – Waiting for approval&hellip;</h2>
+  <div id="status-banner" class="alert alert-warn" style="margin-bottom:.75rem; display:none"></div>
+  <div id="status-pending" style="display:flex; align-items:center; gap:.75rem">
+    <span class="spinner" style="width:1.25rem; height:1.25rem; border-width:3px"></span>
+    <span class="muted">Checking for approval every {{ interval }} seconds&hellip;</span>
+  </div>
+  <div id="status-done" style="display:none">
+    <span class="badge badge-ok">Authorized</span>
+    Token saved. Redirecting to settings&hellip;
+  </div>
+  <p style="margin-top:1rem; font-size:.85rem">
+    <a href="/settings">Cancel and return to Settings</a>
+  </p>
+</div>
+
+<style>
+.spinner {
+  display: inline-block;
+  width: 1rem; height: 1rem;
+  border: 3px solid #ddd;
+  border-top-color: #e00;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script>
+(function () {
+  const DEVICE_CODE = {{ device_code | tojson }};
+  const INTERVAL_MS = {{ interval }} * 1000;
+  const EXPIRES_IN  = {{ expires_in }};
+
+  const statusPending = document.getElementById("status-pending");
+  const statusDone    = document.getElementById("status-done");
+  const statusBanner  = document.getElementById("status-banner");
+  const countdown     = document.getElementById("countdown");
+
+  // countdown timer
+  let remaining = EXPIRES_IN;
+  const timer = setInterval(() => {
+    remaining -= 1;
+    countdown.textContent = remaining > 0 ? remaining : 0;
+    if (remaining <= 0) {
+      clearInterval(timer);
+      showError("Code expired. Please go back and start again.");
+      clearInterval(poller);
+    }
+  }, 1000);
+
+  function showError(msg) {
+    statusPending.style.display = "none";
+    statusBanner.style.display  = "block";
+    statusBanner.textContent    = msg;
+  }
+
+  async function poll() {
+    let data;
+    try {
+      const resp = await fetch("/settings/rhn/device-auth-poll?device_code=" + encodeURIComponent(DEVICE_CODE));
+      data = await resp.json();
+    } catch (e) {
+      // network glitch – keep polling
+      return;
+    }
+
+    if (data.status === "done") {
+      clearInterval(poller);
+      clearInterval(timer);
+      statusPending.style.display = "none";
+      statusDone.style.display    = "block";
+      setTimeout(() => { window.location.href = "/settings?rhn_token_ok=1"; }, 1500);
+    } else if (data.status === "error") {
+      clearInterval(poller);
+      clearInterval(timer);
+      showError(data.message || "Authorization failed.");
+    }
+    // status === "pending" → keep polling
+  }
+
+  const poller = setInterval(poll, INTERVAL_MS);
+  // poll once immediately without waiting the full interval
+  poll();
+})();
+</script>
+{% endblock %}
