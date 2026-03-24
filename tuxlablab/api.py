@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 import ssl
 import urllib.request
 
@@ -49,6 +50,8 @@ templates = Jinja2Templates(directory=str(_HERE / "web" / "templates"))
 _manager = VMManager()
 _download_status_lock = threading.Lock()
 _download_status: dict[str, dict[str, str | int | None]] = {}
+_vm_create_jobs_lock = threading.Lock()
+_vm_create_jobs: dict[str, dict[str, object]] = {}
 
 
 def _set_download_status(
@@ -308,20 +311,35 @@ def _vm_create_stream_response(
     distribution: str | None,
 ):
     """Create a VM and stream progress as Server-Sent Events."""
-    output_lines: list[str] = []
-    done = threading.Event()
+    fqdn = config.full_hostname(hostname)
+    should_start = False
 
-    def _task():
-        try:
-            _manager.create_vm(
-                hostname, vcpus, ram_mb, distribution, output_lines,
-            )
-        except VMManagerError as exc:
-            output_lines.append(f"ERROR: {exc}")
-        finally:
-            done.set()
+    with _vm_create_jobs_lock:
+        existing = _vm_create_jobs.get(fqdn)
+        if existing is None:
+            output_lines: list[str] = []
+            done = threading.Event()
+            _vm_create_jobs[fqdn] = {
+                "output_lines": output_lines,
+                "done": done,
+            }
+            should_start = True
+        else:
+            output_lines = cast(list[str], existing["output_lines"])
+            done = cast(threading.Event, existing["done"])
 
-    threading.Thread(target=_task, daemon=True).start()
+    if should_start:
+        def _task():
+            try:
+                _manager.create_vm(
+                    hostname, vcpus, ram_mb, distribution, output_lines,
+                )
+            except VMManagerError as exc:
+                output_lines.append(f"ERROR: {exc}")
+            finally:
+                done.set()
+
+        threading.Thread(target=_task, daemon=True).start()
 
     def _generate() -> Generator[str, None, None]:
         sent = 0
