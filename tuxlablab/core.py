@@ -214,13 +214,24 @@ class VMManager:
             info = VMInfo(
                 name=dom.name(),
                 state=state_str,
-                vcpus=dom.maxVcpus(),
+                vcpus=self._get_vcpus_from_xml(dom),
                 memory_mb=dom.maxMemory() // 1024,
                 disks=self._get_disk_paths(dom),
             )
             vms.append(info)
         vms.sort(key=lambda v: v.name)
         return vms
+
+    def _get_vcpus_from_xml(self, dom: "libvirt.virDomain") -> int:
+        """Read vCPU count from domain XML (works for running and stopped domains)."""
+        try:
+            root = ET.fromstring(dom.XMLDesc())
+            vcpu_el = root.find("vcpu")
+            if vcpu_el is not None and vcpu_el.text:
+                return int(vcpu_el.text)
+        except Exception:
+            pass
+        return 0
 
     def get_vm(self, hostname: str) -> VMInfo | None:
         fqdn = self._cfg.full_hostname(hostname)

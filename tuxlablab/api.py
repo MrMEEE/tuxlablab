@@ -17,6 +17,11 @@ from pydantic import BaseModel
 import tuxlablab.db as _db
 from tuxlablab.config import config
 from tuxlablab.core import VMManager, VMManagerError
+from tuxlablab.rh_download import (
+    RHDownloadError,
+    get_rhel_kvm_download_info,
+    rhel_version_from_filename,
+)
 
 # ---------------------------------------------------------------------------
 # Application setup
@@ -60,6 +65,7 @@ class UpsertDistributionRequest(BaseModel):
     display_name: str
     image_file: str
     playbooks: str = ""
+    download_url: str = ""
 
 
 class UpsertSettingRequest(BaseModel):
@@ -195,6 +201,7 @@ def api_upsert_distribution(name: str, req: UpsertDistributionRequest):
         display_name=req.display_name,
         image_file=req.image_file,
         playbooks=req.playbooks,
+        download_url=req.download_url,
     )
     return {"status": "ok", "name": name}
 
@@ -423,10 +430,19 @@ def web_vm_detail(request: Request, name: str):
 def web_distributions(request: Request):
     """Distributions management page."""
     dists = _db.list_distributions()
+    images_dir = config.images_dir
+    rhn_configured = bool(_db.get_setting("rhn_offline_token"))
+    for d in dists:
+        d["image_present"] = (images_dir / d["image_file"]).exists()
+        d["is_rhel"] = d["image_file"].startswith("rhel-")
     return templates.TemplateResponse(
         request=request,
         name="distributions.html",
-        context={"request": request, "distributions": dists},
+        context={
+            "request": request,
+            "distributions": dists,
+            "rhn_configured": rhn_configured,
+        },
     )
 
 
@@ -437,10 +453,82 @@ def web_distribution_add(
     display_name: str = Form(...),
     image_file: str = Form(...),
     playbooks: str = Form(""),
+    download_url: str = Form(""),
 ):
     _db.upsert_distribution(
-        name=name, display_name=display_name, image_file=image_file, playbooks=playbooks,
+        name=name, display_name=display_name, image_file=image_file,
+        playbooks=playbooks, download_url=download_url,
     )
+    return RedirectResponse(url="/distributions", status_code=303)
+
+
+@app.post("/distributions/{name}/update-url", response_class=HTMLResponse, tags=["web"])
+def web_distribution_update_url(request: Request, name: str, download_url: str = Form("")):
+    """Update only the download_url for an existing distribution."""
+    dist = _db.get_distribution(name)
+    if dist is None:
+        raise HTTPException(status_code=404, detail=f"Distribution '{name}' not found.")
+    _db.upsert_distribution(
+        name=dist["name"],
+        display_name=dist["display_name"],
+        image_file=dist["image_file"],
+        playbooks=dist["playbooks"],
+        download_url=download_url.strip(),
+    )
+    return RedirectResponse(url="/distributions", status_code=303)
+
+
+@app.post("/distributions/{name}/download", response_class=HTMLResponse, tags=["web"])
+def web_distribution_download(request: Request, name: str, background_tasks: BackgroundTasks):
+    """Start a background download of a distribution image."""
+    dist = _db.get_distribution(name)
+    if dist is None:
+        raise HTTPException(status_code=404, detail=f"Distribution '{name}' not found.")
+
+    image_file = dist["image_file"]
+    images_dir = config.images_dir
+    images_dir.mkdir(parents=True, exist_ok=True)
+    dest = images_dir / image_file
+
+    # Always prefer a manually configured download_url (any distro, no cert needed).
+    url = dist.get("download_url", "").strip()
+    cert_args: list[str] = []
+
+    if not url and image_file.startswith("rhel-"):
+        # No stored URL: construct the Red Hat CDN URL and resolve entitlement certs.
+        try:
+            version = rhel_version_from_filename(image_file)
+            info = get_rhel_kvm_download_info(
+                rhel_version=version,
+                ca_cert=_db.get_setting("rhn_ca_cert") or "",
+                cert=_db.get_setting("rhn_entitlement_cert") or "",
+                key=_db.get_setting("rhn_entitlement_key") or "",
+            )
+        except RHDownloadError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        url = info["url"]
+        cert_args = [
+            "--cacert", info["ca_cert"],
+            "--cert", info["cert"],
+            "--key", info["key"],
+        ]
+
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="No download URL configured for this distribution.",
+        )
+
+    def _download():
+        import subprocess
+        subprocess.run(
+            ["curl", "-L", "--output", str(dest), "--continue-at", "-"]
+            + cert_args
+            + [url],
+            check=False,
+        )
+
+    background_tasks.add_task(_download)
     return RedirectResponse(url="/distributions", status_code=303)
 
 
@@ -462,7 +550,10 @@ def web_settings(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
-        context={"request": request, "settings": settings},
+        context={
+            "request": request,
+            "settings": settings,
+        },
     )
 
 

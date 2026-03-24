@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS distributions (
     name         TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     image_file   TEXT NOT NULL,
-    playbooks    TEXT NOT NULL DEFAULT ''
+    playbooks    TEXT NOT NULL DEFAULT '',
+    download_url TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS vm_inventory (
@@ -51,6 +52,9 @@ _SETTINGS_DEFAULTS: dict[str, str] = {
     "labdhcpend": "192.168.124.250",
     "rhnusername": "",
     "rhnpassword": "",
+    "rhn_ca_cert": "",
+    "rhn_entitlement_cert": "",
+    "rhn_entitlement_key": "",
     "dc_home": _DEFAULT_DC_HOME,
     "ssh_key_path": _DEFAULT_SSH_KEY,
     "libvirt_uri": "qemu:///system",
@@ -69,6 +73,22 @@ _REQUIRED_SETTING_KEYS = {
     "host",
     "port",
 }
+
+# (name, display_name, image_file, playbooks, download_url)
+# Sourced from MrMEEE/laptop-lab and mglantz/laptop-lab distribution templates.
+# These are seeded on first init only (INSERT OR IGNORE – user edits are preserved).
+_DISTRIBUTION_DEFAULTS: list[tuple[str, str, str, str, str]] = [
+    ("aap",     "Ansible Automation Platform on RHEL 9.7", "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml aap.yml",    ""),
+    ("apache",  "Apache Webserver on RHEL 9.7",            "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml apache.yml",  ""),
+    ("centos9", "CentOS Stream 9",                         "CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2", "",            "https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"),
+    ("oel92",   "Oracle Enterprise Linux 9.2",             "OL9U2_x86_64-kvm-b197.qcow",                   "",              ""),
+    ("pcidss",  "RHEL 9.7 / PCIDSS",                      "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml pcidss.yml",  ""),
+    ("quarkus", "Quarkus on RHEL 9.7",                    "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml quarkus.yml", ""),
+    ("rhel97",  "Red Hat Enterprise Linux 9.7",            "rhel-9.7-x86_64-kvm.qcow2",                    "rh-register.yml",             ""),
+    ("rhel100", "Red Hat Enterprise Linux 10.0",           "rhel-10.0-x86_64-kvm.qcow2",                   "rh-register.yml",             ""),
+    ("rocky9",  "Rocky Linux 9",                          "Rocky-9-GenericCloud-Base.latest.x86_64.qcow2", "",              "https://dl.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2"),
+    ("sles15",  "SUSE Enterprise Linux 15",               "sles15-raw.qcow2",                              "",              ""),
+]
 
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9-]{1,63}(?<!-))(?:\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
@@ -115,15 +135,40 @@ def _db_path() -> Path:
 
 
 def init_db(path: Path | None = None) -> None:
-    """Create tables and seed default settings (idempotent)."""
+    """Create tables and seed default settings and distributions (idempotent)."""
     db = path or _db_path()
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as conn:
         conn.executescript(_DDL)
+        # Migrate existing databases that predate the download_url column.
+        try:
+            conn.execute("ALTER TABLE distributions ADD COLUMN download_url TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        # Migrate all RHEL 9.3 distributions to 9.7 in existing databases.
+        conn.execute(
+            "UPDATE distributions"
+            " SET image_file   = REPLACE(image_file,   'rhel-9.3-', 'rhel-9.7-'),"
+            "     display_name = REPLACE(display_name, '9.3',       '9.7')"
+            " WHERE image_file LIKE 'rhel-9.3-%'"
+        )
+        # Rename the rhel93 distribution key to rhel97 (insert then delete).
+        conn.execute(
+            "INSERT OR IGNORE INTO distributions"
+            " SELECT 'rhel97', display_name, image_file, playbooks, download_url"
+            " FROM distributions WHERE name = 'rhel93'"
+        )
+        conn.execute("DELETE FROM distributions WHERE name = 'rhel93'")
         # Ensure all known settings keys exist without overriding user values.
         conn.executemany(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             list(_SETTINGS_DEFAULTS.items()),
+        )
+        # Seed built-in distributions without overriding user-created entries.
+        conn.executemany(
+            "INSERT OR IGNORE INTO distributions (name, display_name, image_file, playbooks, download_url)"
+            " VALUES (?, ?, ?, ?, ?)",
+            _DISTRIBUTION_DEFAULTS,
         )
         conn.commit()
 
@@ -156,7 +201,7 @@ def get_db(path: Path | None = None) -> Generator[sqlite3.Connection, None, None
 def list_distributions(db_path: Path | None = None) -> list[dict]:
     with get_db(db_path) as conn:
         rows = conn.execute(
-            "SELECT name, display_name, image_file, playbooks FROM distributions ORDER BY name"
+            "SELECT name, display_name, image_file, playbooks, download_url FROM distributions ORDER BY name"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -164,7 +209,7 @@ def list_distributions(db_path: Path | None = None) -> list[dict]:
 def get_distribution(name: str, db_path: Path | None = None) -> dict | None:
     with get_db(db_path) as conn:
         row = conn.execute(
-            "SELECT name, display_name, image_file, playbooks FROM distributions WHERE name = ?",
+            "SELECT name, display_name, image_file, playbooks, download_url FROM distributions WHERE name = ?",
             (name,),
         ).fetchone()
     return dict(row) if row else None
@@ -175,20 +220,22 @@ def upsert_distribution(
     display_name: str,
     image_file: str,
     playbooks: str = "",
+    download_url: str = "",
     db_path: Path | None = None,
 ) -> None:
     """Insert or replace a distribution record."""
     with get_db(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO distributions (name, display_name, image_file, playbooks)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO distributions (name, display_name, image_file, playbooks, download_url)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 display_name = excluded.display_name,
                 image_file   = excluded.image_file,
-                playbooks    = excluded.playbooks
+                playbooks    = excluded.playbooks,
+                download_url = excluded.download_url
             """,
-            (name, display_name, image_file, playbooks),
+            (name, display_name, image_file, playbooks, download_url),
         )
 
 

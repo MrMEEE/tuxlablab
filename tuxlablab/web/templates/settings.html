@@ -17,12 +17,37 @@
   <strong>labgw</strong>, <strong>labdhcpstart</strong>, and <strong>labdhcpend</strong>
   must be valid IPv4 addresses, and DHCP start must be less than or equal to DHCP end.
 </p>
+<p class="muted" style="margin-bottom:1.5rem; font-size:.9rem;">
+  <strong>Red Hat downloads:</strong> RHEL images are downloaded directly from the Red Hat CDN
+  using your system's entitlement certificates (installed by <code>subscription-manager</code>).
+  Certificates are auto-discovered from <code>/etc/pki/entitlement/</code> and
+  <code>/etc/rhsm/ca/redhat-uep.pem</code>.
+  If your certificates are in a non-standard location, set
+  <code>rhn_ca_cert</code>, <code>rhn_entitlement_cert</code>, and <code>rhn_entitlement_key</code>
+  in the table below.
+  <code>rhnusername</code> and <code>rhnpassword</code> are used only for RHSM subscription
+  registration (<em>not</em> for image downloads).
+</p>
 
 {% if error %}
 <div class="alert alert-danger" style="margin-bottom:1rem;">
   {{ error }}
 </div>
 {% endif %}
+
+<div class="card" style="margin-bottom:1.5rem">
+  <h2 style="margin-bottom:.75rem">Red Hat CDN Downloads</h2>
+  <p style="margin-bottom:.5rem; font-size:.9rem;">
+    RHEL images are fetched directly from <code>cdn.redhat.com</code> using the entitlement
+    certificate installed by <strong>subscription-manager</strong> on this host.
+  </p>
+  <ul style="margin:.5rem 0 0 1.25rem; font-size:.9rem; line-height:1.8">
+    <li>Default CA cert: <code>/etc/rhsm/ca/redhat-uep.pem</code></li>
+    <li>Default cert/key: auto-discovered from <code>/etc/pki/entitlement/</code></li>
+    <li>Override any path via <code>rhn_ca_cert</code>, <code>rhn_entitlement_cert</code>,
+        <code>rhn_entitlement_key</code> in the settings table below.</li>
+  </ul>
+</div>
 
 <div class="card">
   {% if settings %}
@@ -39,7 +64,7 @@
         <td><code>{{ s.key }}</code></td>
         <td>
           <form method="post" action="/settings/{{ s.key }}" class="inline-settings-form">
-            <input type="{% if 'password' in s.key %}password{% else %}text{% endif %}"
+            <input type="{% if 'password' in s.key or 'token' in s.key %}password{% else %}text{% endif %}"
                    name="value"
                    value="{{ s.value }}"
                    class="form-control form-control-inline"/>

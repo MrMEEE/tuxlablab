@@ -8,14 +8,27 @@
 <p class="muted" style="margin-bottom:1.5rem">
   Distributions are stored in the SQLite database.
   Add a distribution by filling in the form below, then place the
-  corresponding <code>.qcow2</code> image in the images directory.
+  corresponding <code>.qcow2</code> image in the images directory,
+  or use the download button if a URL is configured.
+  RHEL images are downloaded using your Red Hat Network credentials.
 </p>
+
+{% if not rhn_configured %}
+<div class="alert alert-warn" style="margin-bottom:1.5rem">
+  <strong>No Red Hat offline token configured.</strong>
+  RHEL image downloads work in two ways: either set an <em>rhn_offline_token</em> on the
+  <a href="/settings">Settings</a> page, or paste a direct download URL into the
+  <em>Download URL</em> field for each RHEL distribution below.
+  To get a direct URL: open the Red Hat Downloads page, right-click the
+  <em>KVM Guest Image</em> download button, and copy the link.
+</div>
+{% endif %}
 
 {% if distributions %}
 <table class="vm-table">
   <thead>
     <tr>
-      <th>Name</th><th>Display Name</th><th>Image File</th><th>Playbooks</th><th>Actions</th>
+      <th>Name</th><th>Display Name</th><th>Image File</th><th>Image</th><th>Download URL</th><th>Playbooks</th><th>Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -25,13 +38,47 @@
       <td>{{ d.display_name }}</td>
       <td><code>{{ d.image_file }}</code></td>
       <td>
+        {% if d.image_present %}
+          <span class="badge badge-ok">Present</span>
+        {% else %}
+          <span class="badge badge-warn">Missing</span>
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/distributions/{{ d.name }}/update-url"
+              class="inline-url-form">
+          <input type="url" name="download_url"
+                 value="{{ d.download_url }}"
+                 placeholder="{% if d.is_rhel %}Paste direct download URL{% else %}https://…{% endif %}"
+                 class="form-control form-control-inline"
+                 style="width:16rem; font-size:.8rem"/>
+          <button type="submit" class="btn btn-secondary btn-sm">Set</button>
+        </form>
+      </td>
+      <td>
         {% if d.playbooks %}
           {% for pb in d.playbooks.split() %}<span class="badge badge-info">{{ pb }}</span> {% endfor %}
         {% else %}<span class="muted">—</span>{% endif %}
       </td>
-      <td>
+      <td style="white-space:nowrap">
+        {% if not d.image_present %}
+          {% set can_download = d.download_url or rhn_configured %}
+          <form method="post" action="/distributions/{{ d.name }}/download"
+                class="inline-form" style="display:inline">
+            <button class="btn btn-primary btn-sm" type="submit"
+                    {% if not can_download %}disabled
+                      title="Set a Download URL or configure an RHN offline token first"
+                    {% elif d.is_rhel and not d.download_url %}
+                      title="Download via Red Hat API (requires offline token)"
+                    {% else %}
+                      title="Download image in the background"
+                    {% endif %}>
+              Download{% if d.is_rhel and not d.download_url %} (RHN){% endif %}
+            </button>
+          </form>
+        {% endif %}
         <form method="post" action="/distributions/{{ d.name }}/delete"
-              class="inline-form"
+              class="inline-form" style="display:inline"
               onsubmit="return confirm('Remove distribution {{ d.name }}?')">
           <button class="btn btn-remove btn-sm" type="submit">Remove</button>
         </form>
@@ -65,6 +112,13 @@
              placeholder="e.g. CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2"
              class="form-control"/>
       <small class="help-text">Filename of the qcow2 image in the images directory.</small>
+    </div>
+    <div class="form-group">
+      <label for="download_url">Download URL <small>(optional)</small></label>
+      <input type="url" id="download_url" name="download_url"
+             placeholder="e.g. https://cloud.centos.org/…/image.qcow2"
+             class="form-control"/>
+      <small class="help-text">Direct URL to download the image when it is missing.</small>
     </div>
     <div class="form-group">
       <label for="playbooks">Playbooks <small>(optional)</small></label>
