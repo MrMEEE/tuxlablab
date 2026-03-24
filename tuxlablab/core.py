@@ -386,18 +386,28 @@ class VMManager:
         # Define and start VM via libvirt
         emit(f"Defining and starting VM {fqdn} ...")
         conn = self._connect()
+        try:
+            conn.lookupByName(fqdn)
+            raise VMManagerError(f"VM '{fqdn}' already exists. Won't override.")
+        except VMManagerError:
+            raise
+        except Exception:
+            pass
         xml = _vm_xml(
             name=fqdn,
             image_path=str(vm_image),
             vcpus=vcpus,
             ram_mb=ram_mb,
         )
-        dom = conn.createXML(xml, 0)
+        dom = conn.defineXML(xml)
         if dom is None:
-            raise VMManagerError("Failed to create VM domain.")
+            raise VMManagerError("Failed to define VM domain.")
 
-        # Persist definition so it survives reboots
-        conn.defineXML(xml)
+        try:
+            if dom.isActive() == 0:
+                dom.create()
+        except Exception as exc:
+            raise VMManagerError(f"Failed to start VM '{fqdn}': {exc}")
 
         # Store inventory in the DB (replaces per-file inventory)
         _db.upsert_vm_inventory(fqdn, ansible_user="root")
@@ -423,29 +433,61 @@ class VMManager:
     def remove_vm(self, hostname: str) -> None:
         fqdn = self._cfg.full_hostname(hostname)
         conn = self._connect()
+        dom = None
         try:
             dom = conn.lookupByName(fqdn)
         except Exception:
-            raise VMManagerError(f"VM '{fqdn}' does not exist.")
+            dom = None
 
-        disks = self._get_disk_paths(dom)
+        disks: list[str] = []
+        if dom is not None:
+            disks = self._get_disk_paths(dom)
+
+        fallback_disk = self._cfg.vms_dir / f"{fqdn}.qcow2"
+        if str(fallback_disk) not in disks:
+            disks.append(str(fallback_disk))
+
+        had_inventory = _db.get_vm_inventory(fqdn) is not None
 
         # Stop if running
-        state_int, _ = dom.state()
-        if _libvirt_state_str(state_int) == "running":
-            dom.destroy()
+        if dom is not None:
+            try:
+                state_int, _ = dom.state()
+                if _libvirt_state_str(state_int) == "running":
+                    dom.destroy()
+            except Exception:
+                pass
 
-        dom.undefine()
+            try:
+                if libvirt is not None and hasattr(dom, "undefineFlags"):
+                    flags = 0
+                    if hasattr(libvirt, "VIR_DOMAIN_UNDEFINE_NVRAM"):
+                        flags |= libvirt.VIR_DOMAIN_UNDEFINE_NVRAM  # type: ignore[attr-defined]
+                    dom.undefineFlags(flags)
+                else:
+                    dom.undefine()
+            except Exception:
+                # Keep going: domain metadata may be inconsistent, but we still
+                # want to remove disk artifacts and DB inventory.
+                pass
 
         # Remove disk files
+        removed_disk = False
         for disk in disks:
             try:
-                Path(disk).unlink(missing_ok=True)
+                disk_path = Path(disk)
+                existed_before = disk_path.exists()
+                disk_path.unlink(missing_ok=True)
+                if existed_before and not disk_path.exists():
+                    removed_disk = True
             except OSError:
                 pass
 
         # Remove inventory from the DB
         _db.delete_vm_inventory(fqdn)
+
+        if dom is None and not removed_disk and not had_inventory:
+            raise VMManagerError(f"VM '{fqdn}' does not exist.")
 
     # ------------------------------------------------------------------
     # Start / Stop
