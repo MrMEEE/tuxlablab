@@ -97,10 +97,10 @@ def get_rhel_kvm_download_info(
 
     resolved_ca = ca_cert.strip() or _DEFAULT_CA_CERT
 
-    # CDN path pattern: /content/dist/rhel{major}/{version}/x86_64/baseos/images/
+    # CDN path pattern: /content/dist/rhel{major}/{major}/x86_64/baseos/iso/
     major = rhel_version.split(".")[0]
     filename = f"rhel-{rhel_version}-x86_64-kvm.qcow2"
-    url = f"{_CDN_BASE}/content/dist/rhel{major}/{rhel_version}/x86_64/baseos/images/{filename}"
+    url = f"{_CDN_BASE}/content/dist/rhel{major}/{major}/x86_64/baseos/iso/{filename}"
 
     return {"url": url, "ca_cert": resolved_ca, "cert": resolved_cert, "key": resolved_key}
 
