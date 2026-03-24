@@ -91,12 +91,12 @@ def _vm_xml(
   <memory unit='MiB'>{ram_mb}</memory>
   <vcpu placement='static'>{vcpus}</vcpu>
   <os>
-    <type arch='x86_64' machine='pc-q35-5.2'>hvm</type>
+    <type arch='x86_64' machine='q35'>hvm</type>
     <boot dev='hd'/>
   </os>
   <cpu mode='host-model' check='none'/>
   <devices>
-    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <emulator>/usr/libexec/qemu-kvm</emulator>
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2'/>
       <source file='{image_path}'/>

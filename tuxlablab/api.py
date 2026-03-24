@@ -301,8 +301,12 @@ def api_health():
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/vms/stream", tags=["vms"])
-def api_create_vm_stream(req: CreateVMRequest):
+def _vm_create_stream_response(
+    hostname: str,
+    vcpus: int,
+    ram_mb: int,
+    distribution: str | None,
+):
     """Create a VM and stream progress as Server-Sent Events."""
     output_lines: list[str] = []
     done = threading.Event()
@@ -310,7 +314,7 @@ def api_create_vm_stream(req: CreateVMRequest):
     def _task():
         try:
             _manager.create_vm(
-                req.hostname, req.vcpus, req.ram_mb, req.distribution, output_lines,
+                hostname, vcpus, ram_mb, distribution, output_lines,
             )
         except VMManagerError as exc:
             output_lines.append(f"ERROR: {exc}")
@@ -330,6 +334,33 @@ def api_create_vm_stream(req: CreateVMRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+@app.post("/api/vms/stream", tags=["vms"])
+def api_create_vm_stream(req: CreateVMRequest):
+    """Create a VM and stream progress as Server-Sent Events."""
+    return _vm_create_stream_response(
+        hostname=req.hostname,
+        vcpus=req.vcpus,
+        ram_mb=req.ram_mb,
+        distribution=req.distribution,
+    )
+
+
+@app.get("/api/vm-create-stream", tags=["vms"])
+def api_create_vm_stream_get(
+    hostname: str,
+    vcpus: int = 2,
+    ram_mb: int = 2048,
+    distribution: str | None = None,
+):
+    """Create a VM and stream progress for web EventSource clients."""
+    return _vm_create_stream_response(
+        hostname=hostname,
+        vcpus=vcpus,
+        ram_mb=ram_mb,
+        distribution=distribution or None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -369,26 +400,23 @@ def web_create_vm_form(request: Request):
 @app.post("/vms/create", response_class=HTMLResponse, tags=["web"])
 def web_create_vm(
     request: Request,
-    background_tasks: BackgroundTasks,
     hostname: str = Form(...),
     cpus: int = Form(2),
     ram_mb: int = Form(2048),
     distribution: str = Form(""),
 ):
     """Handle VM creation form submission."""
-    output_lines: list[str] = []
-
-    def _task():
-        try:
-            _manager.create_vm(hostname, cpus, ram_mb, distribution or None, output_lines)
-        except VMManagerError as exc:
-            output_lines.append(f"ERROR: {exc}")
-
-    background_tasks.add_task(_task)
     return templates.TemplateResponse(
         request=request,
         name="create_vm_progress.html",
-        context={"request": request, "hostname": config.full_hostname(hostname)},
+        context={
+            "request": request,
+            "hostname": config.full_hostname(hostname),
+            "raw_hostname": hostname,
+            "cpus": cpus,
+            "ram_mb": ram_mb,
+            "distribution": distribution,
+        },
     )
 
 

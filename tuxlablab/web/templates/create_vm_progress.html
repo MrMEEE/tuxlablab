@@ -18,8 +18,17 @@
 (function () {
   const log = document.getElementById('log');
   const doneBox = document.getElementById('done-box');
+  const params = new URLSearchParams({
+    hostname: {{ raw_hostname | tojson }},
+    vcpus: {{ cpus | tojson }},
+    ram_mb: {{ ram_mb | tojson }},
+  });
+  const distribution = {{ distribution | tojson }};
+  if (distribution) {
+    params.set('distribution', distribution);
+  }
 
-  const es = new EventSource('/api/vms/stream');
+  const es = new EventSource(`/api/vm-create-stream?${params.toString()}`);
 
   es.onmessage = function (e) {
     if (e.data === '[DONE]') {
