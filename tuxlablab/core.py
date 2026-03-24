@@ -117,10 +117,9 @@ def _vm_xml(
     </input>
     <input type='mouse' bus='ps2'/>
     <input type='keyboard' bus='ps2'/>
-    <graphics type='spice' autoport='yes'>
-      <listen type='address'/>
-      <image compression='off'/>
-    </graphics>
+        <graphics type='vnc' autoport='yes'>
+            <listen type='address'/>
+        </graphics>
     <video>
             <model type='virtio' heads='1' primary='yes'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x0'/>
