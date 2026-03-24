@@ -7,9 +7,11 @@ original laptop-lab ``vm`` bash script.
 
 from __future__ import annotations
 
+import os
 import pwd
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -206,6 +208,7 @@ class VMManager:
             return
 
         dirs = [self._cfg.dc_home, self._cfg.images_dir, self._cfg.vms_dir, vm_image.parent]
+        dirs.extend(vm_image.parent.parents)
         seen: set[Path] = set()
         unique_dirs: list[Path] = []
         for d in dirs:
@@ -229,6 +232,30 @@ class VMManager:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+
+    def _ensure_libvirt_path_traversal(self, vm_image: Path) -> None:
+        """Fallback permissions to allow qemu:///system to traverse user paths."""
+        if self._cfg.libvirt_uri != "qemu:///system":
+            return
+
+        for d in [vm_image.parent, *vm_image.parent.parents]:
+            if not d.exists():
+                continue
+            try:
+                mode = d.stat().st_mode
+                new_mode = mode | stat.S_IXOTH
+                if new_mode != mode and os.access(d, os.W_OK):
+                    d.chmod(new_mode)
+            except OSError:
+                continue
+
+        try:
+            mode = vm_image.stat().st_mode
+            new_mode = mode | stat.S_IROTH | stat.S_IWOTH
+            if new_mode != mode and os.access(vm_image, os.W_OK):
+                vm_image.chmod(new_mode)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Connection
@@ -350,6 +377,7 @@ class VMManager:
         shutil.copy2(src_image, vm_image)
         vm_image.chmod(0o660)
         self._grant_libvirt_disk_access(vm_image)
+        self._ensure_libvirt_path_traversal(vm_image)
 
         # Prepare image with virt-sysprep
         emit(f"Preparing image for {fqdn} ...")
