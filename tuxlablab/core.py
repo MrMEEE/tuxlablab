@@ -7,6 +7,7 @@ original laptop-lab ``vm`` bash script.
 
 from __future__ import annotations
 
+import pwd
 import shutil
 import socket
 import subprocess
@@ -76,6 +77,17 @@ _LIBVIRT_STATES = {
 
 def _libvirt_state_str(state_int: int) -> str:
     return _LIBVIRT_STATES.get(state_int, "unknown")
+
+
+def _libvirt_system_users() -> list[str]:
+    users: list[str] = []
+    for candidate in ("qemu", "libvirt-qemu"):
+        try:
+            pwd.getpwnam(candidate)
+        except KeyError:
+            continue
+        users.append(candidate)
+    return users
 
 
 def _vm_xml(
@@ -179,6 +191,44 @@ class VMManager:
     def __init__(self, cfg: Config | None = None) -> None:
         self._cfg = cfg or _global_config
         self._conn: "libvirt.virConnect | None" = None
+
+    def _grant_libvirt_disk_access(self, vm_image: Path) -> None:
+        """Grant qemu/libvirt-qemu ACL access to VM disk paths for qemu:///system."""
+        if self._cfg.libvirt_uri != "qemu:///system":
+            return
+
+        setfacl = shutil.which("setfacl")
+        if not setfacl:
+            return
+
+        users = _libvirt_system_users()
+        if not users:
+            return
+
+        dirs = [self._cfg.dc_home, self._cfg.images_dir, self._cfg.vms_dir, vm_image.parent]
+        seen: set[Path] = set()
+        unique_dirs: list[Path] = []
+        for d in dirs:
+            rd = d.resolve()
+            if rd in seen or not rd.exists():
+                continue
+            seen.add(rd)
+            unique_dirs.append(rd)
+
+        for user in users:
+            for d in unique_dirs:
+                subprocess.run(
+                    [setfacl, "-m", f"u:{user}:rx", str(d)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            subprocess.run(
+                [setfacl, "-m", f"u:{user}:rw", str(vm_image)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
     # ------------------------------------------------------------------
     # Connection
@@ -298,7 +348,8 @@ class VMManager:
 
         vm_image = cfg.vms_dir / f"{fqdn}.qcow2"
         shutil.copy2(src_image, vm_image)
-        vm_image.chmod(0o777)
+        vm_image.chmod(0o660)
+        self._grant_libvirt_disk_access(vm_image)
 
         # Prepare image with virt-sysprep
         emit(f"Preparing image for {fqdn} ...")
